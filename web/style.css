@@ -27,12 +27,12 @@ svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width:
 /* ---------- bar atas ---------- */
 .topbar {
   position: sticky; top: 0; z-index: 10;
-  display: flex; align-items: center; gap: 8px;
   padding: calc(10px + env(safe-area-inset-top)) 12px 10px;
   background: rgba(16, 18, 23, 0.92);
   backdrop-filter: blur(10px);
   border-bottom: 1px solid var(--line);
 }
+.topbar-row { display: flex; align-items: center; gap: 8px; }
 .topbar h1 {
   flex: 1; margin: 0 4px; font-size: 18px; font-weight: 700;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -208,3 +208,72 @@ dialog h2 { margin: 0 0 12px; font-size: 18px; }
   .track { grid-template-columns: 70px 36px 36px 1fr 30px; gap: 6px; }
 }
 #checkBtn { margin: -4px 0 16px; }
+
+/* ---------- banner jangan ditutup / boleh ditutup ---------- */
+.banner {
+  margin: 10px 0 0; padding: 10px 14px; border-radius: 12px;
+  font-size: 14px; line-height: 1.35; position: relative; overflow: hidden;
+}
+.banner-title { font-weight: 800; }
+.banner-text { white-space: pre-line; margin-top: 2px; }
+.banner.warn { background: #3a2606; color: #ffd591; border: 1px solid #b26b00; }
+.banner.warn::after {
+  content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 3px;
+  background: repeating-linear-gradient(90deg, #ffb020 0 24px, transparent 24px 48px);
+  animation: march 0.8s linear infinite;
+}
+@keyframes march { to { background-position: 48px 0; } }
+.banner.ok { background: #0c2e1c; color: #a7f3c7; border: 1px solid #1f8a4f; }
+
+/* ---------- ekspor & catatan ---------- */
+.export-btn {
+  width: 100%; margin-top: 8px; display: flex; align-items: center; justify-content: center; gap: 8px;
+  padding: 12px; border-radius: 12px; border: 1px dashed var(--accent); background: transparent;
+  color: var(--accent); font-weight: 700;
+}
+.note {
+  background: var(--surface-2); border: 1px solid var(--line); border-radius: 12px;
+  padding: 10px 12px; margin-top: 12px; font-size: 14px; color: var(--muted);
+  display: flex; flex-direction: column; gap: 8px; align-items: flex-start;
+}
+
+/* ---------- peta tempo ---------- */
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip {
+  border: 1px solid var(--line); background: var(--surface-2); border-radius: 999px;
+  padding: 7px 12px; font-size: 13px; font-weight: 600; display: inline-flex; gap: 6px; align-items: baseline;
+  border-left: 4px solid var(--c, var(--line));
+}
+.chip small { color: var(--muted); font-weight: 400; }
+.chip.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.chip.on small { color: var(--accent-ink); }
+.sec-chips { margin: 4px 0 10px; }
+.sec-card { background: var(--bg); border: 1px solid var(--line); border-radius: 12px; padding: 6px 12px 10px; margin-bottom: 8px; }
+.sec-title { font-weight: 700; padding: 6px 0; }
+.seg.wide button { width: auto; padding: 0 12px; }
+.stepper button { min-width: 40px; padding: 0 8px; }
+.stepper span { min-width: 56px; }
+#barRow.disabled .seg { opacity: .35; pointer-events: none; }
+.row.btns { justify-content: flex-start; flex-wrap: wrap; gap: 8px; }
+.wide-btn { width: 100%; margin-top: 6px; }
+.danger { color: var(--danger); border-color: rgba(248, 113, 113, .4); }
+#secDelete { margin-top: 6px; }
+#gapRows .row:first-child { border-top: 1px solid var(--line); }
+
+/* ---------- dialog ekspor ---------- */
+.radio-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
+.radio-list label {
+  display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px;
+  border: 1px solid var(--line); border-radius: 12px; background: var(--bg);
+}
+.radio-list input { margin-top: 3px; accent-color: var(--accent); width: 18px; height: 18px; }
+.radio-list label:has(input:checked) { border-color: var(--accent); }
+.radio-list span { display: flex; flex-direction: column; }
+.radio-list small { color: var(--muted); }
+dialog .switch { margin: 4px 0 12px; }
+button.primary { background: var(--accent); color: var(--accent-ink); border: 0; font-weight: 700; }
+button.primary:disabled { opacity: .5; }
+dialog { max-height: 90dvh; overflow-y: auto; }
+.sec-card .row, #mapPanel .row { flex-wrap: wrap; row-gap: 6px; }
+.stepper { flex-wrap: wrap; justify-content: flex-end; }
+.stepper button { white-space: nowrap; }

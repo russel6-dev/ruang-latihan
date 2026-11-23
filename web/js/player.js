@@ -4,7 +4,7 @@
 const LOOKAHEAD = 0.15; // detik penjadwalan ke depan
 const TICK_MS = 25;
 
-function makeClick(ctx, freq, amp) {
+export function makeClick(ctx, freq, amp) {
   const len = Math.round(ctx.sampleRate * 0.04);
   const buf = ctx.createBuffer(1, len, ctx.sampleRate);
   const d = buf.getChannelData(0);
@@ -46,8 +46,7 @@ export class Player {
     this.tracks = {};
     this.metro = { on: false, vol: 0.8 };
     this.beats = [];
-    this.bpb = 4;
-    this.downbeat = 0;
+    this.info = [];
     this.onEnded = null;
   }
 
@@ -140,10 +139,10 @@ export class Player {
     if (this.clickGain) this.clickGain.gain.setTargetAtTime(this.metro.vol, this.ctx.currentTime, 0.01);
   }
 
-  setGrid(beats, bpb, downbeat) {
-    this.beats = beats;
-    this.bpb = bpb;
-    this.downbeat = downbeat;
+  // times = detik tiap ketukan; info[i] = {bar, beat (0 = ketukan "1"), beats (panjang bar), ...}
+  setGrid(times, info) {
+    this.beats = times;
+    this.info = info;
     if (this.playing) {
       const horizon = this.startPos + (this.ctx.currentTime + LOOKAHEAD - this.startCtx);
       this.nextBeat = lowerBound(beats, horizon);
@@ -151,7 +150,11 @@ export class Player {
   }
 
   inBar(i) {
-    return (((i - this.downbeat) % this.bpb) + this.bpb) % this.bpb;
+    return this.info?.[i]?.beat ?? 0;
+  }
+
+  barLength(i) {
+    return this.info?.[i]?.beats ?? 4;
   }
 
   periodAt(i) {
@@ -181,9 +184,10 @@ export class Player {
     const idx = lowerBound(this.beats, p - 0.002);
     let startCtx = now;
     if (countIn && idx < this.beats.length) {
+      // Hitungan masuk: selalu 1 bar penuh "1-2-3-4" dengan tempo di posisi mulai.
       const per = this.periodAt(idx);
-      const n = this.bpb;
-      for (let j = 0; j < n; j++) this.scheduleClick(now + j * per, this.inBar(idx - n + j), true);
+      const n = this.barLength(idx);
+      for (let j = 0; j < n; j++) this.scheduleClick(now + j * per, j, true, -1, n);
       startCtx = Math.max(now, now + n * per - (this.beats[idx] - p));
     }
 
@@ -211,8 +215,8 @@ export class Player {
       const t = this.startCtx + (this.beats[i] - this.startPos);
       if (t > ahead) break;
       if (t >= now - 0.02) {
-        if (this.metro.on) this.scheduleClick(t, this.inBar(i), false, i);
-        else this.visual.push({ t, n: this.inBar(i), count: false, i });
+        if (this.metro.on) this.scheduleClick(t, this.inBar(i), false, i, this.barLength(i));
+        else this.visual.push({ t, n: this.inBar(i), count: false, i, len: this.barLength(i) });
       }
       this.nextBeat++;
     }
@@ -224,14 +228,14 @@ export class Player {
     }
   }
 
-  scheduleClick(t, n, count, i = -1) {
+  scheduleClick(t, n, count, i = -1, len = 4) {
     const src = this.ctx.createBufferSource();
     src.buffer = this.clickBufs[n === 0 ? 0 : 1];
     src.connect(this.clickGain);
     src.start(t);
     src.onended = () => this.clicks.delete(src);
     this.clicks.add(src);
-    this.visual.push({ t, n, count, i });
+    this.visual.push({ t, n, count, i, len });
   }
 
   // Ketukan yang sedang terdengar sekarang (untuk lampu indikator).

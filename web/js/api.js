@@ -107,20 +107,30 @@ export const api = {
 
   async upload(file, title, onProgress) {
     if (file.size > MAX_MB * 1048576) throw new ApiError(`File terlalu besar (maks ${MAX_MB} MB)`, 413);
+    const ext = (file.name.match(/\.([a-z0-9]{1,5})$/i)?.[1] || 'bin').toLowerCase();
+    return this.send([{ path: `input.${ext}`, blob: file }], { title }, onProgress);
+  },
+
+  // Proses ulang deteksi tempo: kirim 6 track yang sudah ada di HP (tanpa pemisahan AI).
+  async reanalyze(stemBlobs, title, onProgress) {
+    const files = Object.entries(stemBlobs).map(([name, blob]) => ({ path: `${name}.opus`, blob }));
+    return this.send(files, { title, mode: 'reanalyze' }, onProgress);
+  },
+
+  async send(files, meta, onProgress) {
     if (!settings.token) throw new ApiError('Token GitHub belum diisi — buka Pengaturan ⚙️', 401);
     const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-    const ext = (file.name.match(/\.([a-z0-9]{1,5})$/i)?.[1] || 'bin').toLowerCase();
-    const content = await readBase64(file);
-    const blobSha = await postBlob(content, (p) => onProgress(p * 0.95));
-    const tree = await gh('/git/trees', {
-      method: 'POST',
-      body: {
-        tree: [
-          { path: `input.${ext}`, mode: '100644', type: 'blob', sha: blobSha },
-          { path: 'meta.json', mode: '100644', type: 'blob', content: JSON.stringify({ title }) },
-        ],
-      },
-    });
+    const total = files.reduce((n, f) => n + f.blob.size, 0) || 1;
+    let done = 0;
+    const entries = [];
+    for (const f of files) {
+      const content = await readBase64(f.blob);
+      const sha = await postBlob(content, (p) => onProgress(((done + p * f.blob.size) / total) * 0.95));
+      done += f.blob.size;
+      entries.push({ path: f.path, mode: '100644', type: 'blob', sha });
+    }
+    entries.push({ path: 'meta.json', mode: '100644', type: 'blob', content: JSON.stringify(meta) });
+    const tree = await gh('/git/trees', { method: 'POST', body: { tree: entries } });
     const commit = await gh('/git/commits', { method: 'POST', body: { message: `lagu ${id}`, tree: tree.sha, parents: [] } });
     await gh('/git/refs', { method: 'POST', body: { ref: `refs/heads/inbox/${id}`, sha: commit.sha } });
     await gh('/actions/workflows/process.yml/dispatches', { method: 'POST', body: { ref: 'main', inputs: { job: id } } });

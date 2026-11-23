@@ -13,13 +13,19 @@
 </head>
 <body>
   <header class="topbar">
-    <button id="backBtn" class="icon-btn" aria-label="Kembali" hidden>
-      <svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg>
-    </button>
-    <h1 id="title">Ruang Latihan</h1>
-    <button id="settingsBtn" class="icon-btn" aria-label="Pengaturan">
-      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/></svg>
-    </button>
+    <div class="topbar-row">
+      <button id="backBtn" class="icon-btn" aria-label="Kembali" hidden>
+        <svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg>
+      </button>
+      <h1 id="title">Ruang Latihan</h1>
+      <button id="settingsBtn" class="icon-btn" aria-label="Pengaturan">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/></svg>
+      </button>
+    </div>
+    <div id="banner" class="banner" role="status" aria-live="polite" hidden>
+      <div id="bannerTitle" class="banner-title"></div>
+      <div id="bannerText" class="banner-text"></div>
+    </div>
   </header>
 
   <main>
@@ -64,6 +70,11 @@
         </div>
       </div>
 
+      <div id="legacyNote" class="note" hidden>
+        Lagu ini diproses pakai versi lama (klik belum pakai peta tempo).
+        <button id="legacyReanalyze" class="ghost small">Proses ulang deteksi</button>
+      </div>
+
       <div class="section-label">Mode latihan</div>
       <div id="presets" class="presets">
         <button data-preset="full">Lagu asli</button>
@@ -71,6 +82,10 @@
         <button data-preset="bass">Minus bass</button>
         <button data-preset="drums">🥁 Minus drum</button>
       </div>
+      <button id="exportBtn" class="export-btn">
+        <svg viewBox="0 0 24 24"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg>
+        Ekspor klik / SQ / mix
+      </button>
 
       <div class="section-label">Mixer</div>
       <div id="tracks" class="tracks"></div>
@@ -85,45 +100,87 @@
           <span class="row-label">Volume klik</span>
           <input type="range" id="metroVol" min="0" max="150" value="80">
         </div>
+      </div>
+
+      <details class="panel" id="mapPanel">
+        <summary>Peta tempo <span class="hint" id="mapSummary"></span></summary>
         <div class="row">
-          <span class="row-label">Ketukan / bar</span>
-          <div class="seg" id="bpbSeg">
-            <button data-v="2">2</button><button data-v="3">3</button><button data-v="4">4</button>
+          <span class="row-label">Mode klik</span>
+          <div class="seg wide" id="modeSeg">
+            <button data-v="steady">Tempo tetap</button><button data-v="follow">Ikuti drummer</button>
+          </div>
+        </div>
+        <div id="secChips" class="chips sec-chips"></div>
+
+        <div class="sec-card">
+          <div class="sec-title" id="secTitle"></div>
+          <div class="row">
+            <span class="row-label">BPM</span>
+            <div class="stepper">
+              <button id="bpmM1">−1</button><button id="bpmM01">−.1</button>
+              <span id="secBpm">120.0</span>
+              <button id="bpmP01">+.1</button><button id="bpmP1">+1</button>
+            </div>
+          </div>
+          <div class="row">
+            <span class="row-label">Tempo kebaca salah?</span>
+            <div class="stepper"><button id="secHalf">÷2</button><button id="secDouble">×2</button></div>
+          </div>
+          <div class="row">
+            <span class="row-label">Birama</span>
+            <div class="seg" id="secBpb">
+              <button data-v="2">2</button><button data-v="3">3</button><button data-v="4">4</button>
+              <button data-v="5">5</button><button data-v="6">6</button><button data-v="7">7</button>
+            </div>
+          </div>
+          <div class="row">
+            <span class="row-label">Geser ketukan "1"</span>
+            <div class="stepper">
+              <button id="secBeatPrev">◀ 1</button><button id="secMsPrev">−10ms</button>
+              <button id="secMsNext">+10ms</button><button id="secBeatNext">1 ▶</button>
+            </div>
+          </div>
+          <div id="gapRows">
+            <div class="row">
+              <label class="switch"><input type="checkbox" id="secGap"><span></span> Ada jeda sebelum bagian ini</label>
+            </div>
+            <div id="gapDetail">
+              <div class="row">
+                <span class="row-label">Hitungan tempo baru</span>
+                <div class="seg" id="ciSeg"><button data-v="0">0</button><button data-v="1">1 bar</button><button data-v="2">2 bar</button></div>
+              </div>
+              <div class="row">
+                <span class="row-label">Sisa jeda</span>
+                <div class="seg" id="gapClickSeg"><button data-v="silent">Klik diam</button><button data-v="old">Tempo lama</button></div>
+              </div>
+            </div>
+          </div>
+          <button id="secDelete" class="ghost small danger">Hapus bagian ini</button>
+        </div>
+
+        <div class="row" id="barRow">
+          <span class="row-label" id="barLabel">Bar</span>
+          <div class="seg" id="barSeg">
+            <button data-v="1">1</button><button data-v="2">2</button><button data-v="3">3</button><button data-v="4">4</button>
             <button data-v="5">5</button><button data-v="6">6</button><button data-v="7">7</button>
           </div>
         </div>
-      </div>
+        <p class="hint">Bar yang lagi diputar isinya berapa ketukan. Pakai buat bar ganjil (misal jeda 2 ketukan).</p>
+        <p class="hint" id="oddList"></p>
 
-      <details class="panel" id="gridPanel">
-        <summary>Koreksi ketukan <span class="hint">(kalau klik-nya nggak pas)</span></summary>
+        <button id="secNew" class="ghost wide-btn">+ Mulai bagian tempo baru di posisi ini</button>
+        <button id="tapBtn" class="tap-btn">TAP</button>
+        <p class="hint">Putar lagunya, lalu tap di tiap ketukan mulai dari ketukan <b>1</b> (minimal 4 kali). BPM &amp; posisi ketukan "1" bagian yang lagi diputar langsung ikut.</p>
+
         <div class="row">
-          <span class="row-label">Ketukan "1"</span>
-          <div class="stepper">
-            <button id="dbPrev">◀</button><span id="dbLabel">geser</span><button id="dbNext">▶</button>
-          </div>
-        </div>
-        <div class="row">
-          <span class="row-label">Geser halus</span>
+          <span class="row-label">Geser semua klik</span>
           <div class="stepper">
             <button id="offMinus">−10ms</button><span id="offLabel">0 ms</span><button id="offPlus">+10ms</button>
           </div>
         </div>
-        <div class="row">
-          <span class="row-label">Tempo</span>
-          <div class="stepper">
-            <button id="half">÷2</button><span id="factorLabel">normal</span><button id="double">×2</button>
-          </div>
-        </div>
-        <div class="row" id="manualRow" hidden>
-          <span class="row-label">BPM manual</span>
-          <div class="stepper">
-            <button id="bpmMinus">−</button><span id="bpmManual">120</span><button id="bpmPlus">+</button>
-          </div>
-        </div>
-        <button id="tapBtn" class="tap-btn">TAP</button>
-        <p class="hint">Putar lagunya, lalu tap di setiap ketukan mulai dari ketukan <b>1</b> (minimal 4 kali). Grid berubah jadi tempo tetap sesuai tap kamu.</p>
-        <div class="row">
-          <button id="gridReset" class="ghost">Kembali ke deteksi otomatis</button>
+        <div class="row btns">
+          <button id="mapReset" class="ghost small">Balik ke hasil deteksi</button>
+          <button id="mapReanalyze" class="ghost small">Proses ulang deteksi</button>
         </div>
       </details>
       <div class="spacer"></div>
@@ -154,6 +211,36 @@
       <div class="dlg-actions">
         <button value="cancel" class="ghost">Batal</button>
         <button value="save" id="saveSettings">Simpan</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="exportDlg">
+    <form method="dialog">
+      <h2>Ekspor</h2>
+      <div class="radio-list">
+        <label><input type="radio" name="exKind" value="click"><span><b>Klik saja</b><small>Metronome sepanjang lagu, ketukan 1 beraksen</small></span></label>
+        <label><input type="radio" name="exKind" value="sq"><span><b>Sequencer saja</b><small>Track pilihan (default Piano/Keys + Lainnya)</small></span></label>
+        <label><input type="radio" name="exKind" value="mix"><span><b>Sesuai mixer</b><small>Persis yang kedengeran sekarang, misal "minus gitar"</small></span></label>
+        <label><input type="radio" name="exKind" value="lr"><span><b>Klik kiri + SQ kanan</b><small>Buat manggung: kiri ke in-ear drummer, kanan ke mixer</small></span></label>
+      </div>
+      <div class="field" id="exStemsField">Track sequencer
+        <div id="exStems" class="chips"></div>
+      </div>
+      <label class="switch" id="exClickField"><input type="checkbox" id="exClick"><span></span> Sertakan klik</label>
+      <label class="switch"><input type="checkbox" id="exCount"><span></span> Count-in 1 bar di awal file</label>
+      <div class="field">Format
+        <div class="seg wide" id="exFormat"><button type="button" data-v="wav">WAV (kualitas penuh)</button><button type="button" data-v="mp3">MP3 (lebih kecil)</button></div>
+        <small id="exSize"></small>
+      </div>
+      <p id="exStatus" class="status-line"></p>
+      <div id="exDone" class="dlg-actions" hidden>
+        <button type="button" id="exShare" class="ghost">Bagikan…</button>
+        <button type="button" id="exSave" class="ghost">Simpan lagi</button>
+      </div>
+      <div class="dlg-actions">
+        <button value="cancel" class="ghost">Tutup</button>
+        <button type="button" id="exGo" class="primary">Buat file</button>
       </div>
     </form>
   </dialog>

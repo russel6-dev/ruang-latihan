@@ -79,31 +79,56 @@ def main(job: str) -> None:
     try:
         files = sh("git", "ls-tree", "--name-only", "FETCH_HEAD", cwd=repo_dir).split()
         meta = json.loads(sh("git", "show", "FETCH_HEAD:meta.json", cwd=repo_dir))
-        src_name = next(f for f in files if f.startswith("input."))
-        src = WORK / src_name
-        with src.open("wb") as f:
-            subprocess.run(["git", "show", f"FETCH_HEAD:{src_name}"], cwd=repo_dir, stdout=f, check=True)
 
-        rep.progress("convert", 0, force=True)
-        mix = WORK / "mix.wav"
-        sh("ffmpeg", "-y", "-v", "error", "-i", str(src), "-vn", "-ac", "2", "-ar", "44100",
-           "-t", str(MAX_MINUTES * 60), str(mix))
+        def fetch_file(name: str) -> Path:
+            dest = WORK / name
+            with dest.open("wb") as f:
+                subprocess.run(["git", "show", f"FETCH_HEAD:{name}"], cwd=repo_dir, stdout=f, check=True)
+            return dest
 
-        rep.progress("separate", 0, force=True)
-        t0 = time.time()
-        stems = separator.separate(mix, WORK / "wav", lambda p: rep.progress("separate", p))
-        print(f"pemisahan selesai dalam {time.time() - t0:.0f} detik")
-
-        rep.progress("beats", 0, force=True)
-        analysis = beats.analyze(str(mix), str(stems["drums"]) if "drums" in stems else None)
-
-        rep.progress("encode", 0, force=True)
         out = WORK / "out"
         out.mkdir()
-        names = [n for n in separator.STEMS if n in stems]
-        for name in names:
-            sh("ffmpeg", "-y", "-v", "error", "-i", str(stems[name]), "-c:a", "libopus", "-b:a", "128k",
-               "-vbr", "on", str(out / f"{name}.opus"))
+        mix = WORK / "mix.wav"
+
+        if meta.get("mode") == "reanalyze":
+            # Proses ulang deteksi tempo saja: HP mengirim 6 track yang sudah ada (tanpa pemisahan AI).
+            rep.progress("convert", 0, force=True)
+            stem_files = {f.rsplit(".", 1)[0]: fetch_file(f) for f in files if f.endswith(".opus")}
+            wavs = {}
+            for name, path in stem_files.items():
+                wavs[name] = WORK / f"{name}.wav"
+                sh("ffmpeg", "-y", "-v", "error", "-i", str(path), "-ac", "2", "-ar", "44100", str(wavs[name]))
+            inputs = []
+            for w in wavs.values():
+                inputs += ["-i", str(w)]
+            sh("ffmpeg", "-y", "-v", "error", *inputs, "-filter_complex",
+               f"amix=inputs={len(wavs)}:normalize=0", str(mix))
+            rep.progress("beats", 0, force=True)
+            analysis = beats.analyze(str(mix), str(wavs["drums"]) if "drums" in wavs else None)
+            names = [n for n in separator.STEMS if n in wavs]
+        else:
+            src = fetch_file(next(f for f in files if f.startswith("input.")))
+            rep.progress("convert", 0, force=True)
+            sh("ffmpeg", "-y", "-v", "error", "-i", str(src), "-vn", "-ac", "2", "-ar", "44100",
+               "-t", str(MAX_MINUTES * 60), str(mix))
+
+            rep.progress("separate", 0, force=True)
+            t0 = time.time()
+            stems = separator.separate(mix, WORK / "wav", lambda p: rep.progress("separate", p))
+            print(f"pemisahan selesai dalam {time.time() - t0:.0f} detik")
+
+            rep.progress("beats", 0, force=True)
+            t0 = time.time()
+            analysis = beats.analyze(str(mix), str(stems["drums"]) if "drums" in stems else None)
+            print(f"deteksi tempo selesai dalam {time.time() - t0:.0f} detik")
+
+            rep.progress("encode", 0, force=True)
+            names = [n for n in separator.STEMS if n in stems]
+            for name in names:
+                sh("ffmpeg", "-y", "-v", "error", "-i", str(stems[name]), "-c:a", "libopus", "-b:a", "128k",
+                   "-vbr", "on", str(out / f"{name}.opus"))
+
+        print("peta tempo:", json.dumps(analysis["sections"]))
         result = {"title": meta.get("title", "Lagu"), "stems": names, **analysis}
         (out / "result.json").write_text(json.dumps(result))
 

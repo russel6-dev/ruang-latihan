@@ -1,6 +1,8 @@
 import { db } from './db.js';
 import { api, settings, loadSettings, saveSettings, repoName } from './api.js';
 import { Player, lowerBound } from './player.js';
+import { buildGrid, sectionIndexAt, sortedSections, mapFromLegacy } from './grid.js';
+import { renderMix, toWav, toMp3, estimateSize, KINDS } from './export.js';
 
 const $ = (id) => document.getElementById(id);
 const player = new Player();
@@ -29,6 +31,8 @@ const STAGE_TEXT = {
   encode: 'Mengemas hasil',
 };
 
+const SEC_COLORS = ['#ffb020', '#60a5fa', '#34d399', '#f472b6', '#a78bfa', '#f87171'];
+
 let current = null; // lagu yang sedang dibuka
 let waveCache = null;
 
@@ -39,6 +43,9 @@ function fmt(t) {
   const s = Math.floor(t % 60);
   return `${m}:${String(s).padStart(2, '0')}`;
 }
+const fmtMs = (t) => `${fmt(t)}.${String(Math.floor((Math.max(0, t) % 1) * 100)).padStart(2, '0')}`;
+const r1 = (x) => Math.round(x * 10) / 10;
+const clone = (x) => JSON.parse(JSON.stringify(x));
 
 let toastTimer;
 function toast(msg, ms = 3000) {
@@ -56,6 +63,43 @@ function loading(text) {
 
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
+// ---------- banner "jangan ditutup" / "boleh ditutup" ----------
+const busy = new Map(); // key -> teks
+let safeTimer;
+
+function busySet(key, text) {
+  busy.set(key, text);
+  clearTimeout(safeTimer);
+  renderBanner();
+}
+
+function busyEnd(key, ok, title, text) {
+  busy.delete(key);
+  if (busy.size) { renderBanner(); return; }
+  if (!ok) { $('banner').hidden = true; return; }
+  const el = $('banner');
+  el.className = 'banner ok';
+  el.hidden = false;
+  $('bannerTitle').textContent = title;
+  $('bannerText').textContent = text;
+  navigator.vibrate?.(60);
+  clearTimeout(safeTimer);
+  safeTimer = setTimeout(() => { if (!busy.size) el.hidden = true; }, 7000);
+}
+
+function renderBanner() {
+  const el = $('banner');
+  if (!busy.size) { el.hidden = true; return; }
+  el.className = 'banner warn';
+  el.hidden = false;
+  $('bannerTitle').textContent = '⚠️ Jangan tutup atau minimize aplikasi dulu';
+  $('bannerText').textContent = [...busy.values()].join('\n');
+}
+
+window.addEventListener('beforeunload', (e) => {
+  if (busy.size) { e.preventDefault(); e.returnValue = ''; }
+});
+
 // ---------- daftar lagu ----------
 async function renderLibrary() {
   const songs = await db.listSongs();
@@ -64,10 +108,11 @@ async function renderLibrary() {
   for (const song of songs) {
     const card = document.createElement('div');
     card.className = 'song-card';
+    const secs = song.map?.sections?.length || 1;
     card.innerHTML = `
       <button class="song-main">
         <span class="song-title">${esc(song.title)}</span>
-        <span class="song-meta">${Math.round(song.bpm)} BPM · ${fmt(song.duration)}</span>
+        <span class="song-meta">${Math.round(song.bpm)} BPM${secs > 1 ? ` · ${secs} bagian tempo` : ''} · ${fmt(song.duration)}</span>
       </button>
       <button class="icon-btn del" aria-label="Hapus">
         <svg viewBox="0 0 24 24"><path d="M5 7h14M10 7V4h4v3M7 7l1 13h8l1-13"/></svg>
@@ -85,27 +130,34 @@ async function renderLibrary() {
 }
 
 // ---------- upload & proses ----------
-const uploads = new Map(); // id lokal -> {title, progress}
+const uploads = new Map(); // id lokal -> {title, progress, error, retry}
 const jobViews = new Map(); // jobId -> state tampilan
 const polling = new Set();
 
 function renderJobs() {
   const box = $('jobs');
   box.innerHTML = '';
-  for (const [, u] of uploads) {
-    box.appendChild(jobCard(u.title, `Mengupload… ${Math.round(u.progress * 100)}%`, u.progress));
-  }
-  for (const [jobId, v] of jobViews) {
-    const card = jobCard(v.title, v.text, v.progress, v.error);
-    if (v.error || v.cancellable) {
-      const btn = document.createElement('button');
-      btn.className = 'ghost small';
-      btn.textContent = v.error ? 'Tutup' : 'Batal';
-      btn.onclick = () => dropJob(jobId, !v.error);
-      card.appendChild(btn);
+  for (const [localId, u] of uploads) {
+    const card = jobCard(u.title, u.error ? u.error : `Mengupload… ${Math.round(u.progress * 100)}%`, u.progress, !!u.error);
+    if (u.error) {
+      if (u.retry) card.appendChild(smallBtn('Coba lagi', () => { uploads.delete(localId); u.retry(); }));
+      card.appendChild(smallBtn('Tutup', () => { uploads.delete(localId); renderJobs(); renderLibrary(); }));
     }
     box.appendChild(card);
   }
+  for (const [jobId, v] of jobViews) {
+    const card = jobCard(v.title, v.text, v.progress, v.error);
+    if (v.error || v.cancellable) card.appendChild(smallBtn(v.error ? 'Tutup' : 'Batal', () => dropJob(jobId, !v.error)));
+    box.appendChild(card);
+  }
+}
+
+function smallBtn(label, onclick) {
+  const b = document.createElement('button');
+  b.className = 'ghost small';
+  b.textContent = label;
+  b.onclick = onclick;
+  return b;
 }
 
 function jobCard(title, text, progress, error = false) {
@@ -129,36 +181,68 @@ async function dropJob(jobId, cancelOnServer) {
   await db.set('jobs', jobs);
   jobViews.delete(jobId);
   polling.delete(jobId);
+  busy.delete(`dl:${jobId}`);
+  renderBanner();
   if (cancelOnServer) api.remove(jobId, true);
   renderJobs();
   renderLibrary();
 }
 
-async function handleFile(file) {
-  if (!file) return;
+// Penanda upload yang sedang jalan (supaya ketahuan kalau aplikasi ditutup di tengah upload).
+async function markUploading(localId, title, on) {
+  const list = ((await db.get('uploading')) || []).filter((u) => u.localId !== localId);
+  if (on) list.push({ localId, title });
+  await db.set('uploading', list);
+}
+
+async function runUpload({ title, label, send, onSent }) {
   const localId = Math.random().toString(36).slice(2);
-  const title = file.name.replace(/\.[^.]+$/, '');
+  const key = `up:${localId}`;
   uploads.set(localId, { title, progress: 0 });
+  await markUploading(localId, title, true);
   renderJobs();
   renderLibrary();
+  busySet(key, `${label} "${title}"… 0%`);
   try {
-    const job = await api.upload(file, title, (p) => {
+    const job = await send((p) => {
       uploads.set(localId, { title, progress: p });
+      busySet(key, `${label} "${title}"… ${Math.round(p * 100)}%`);
       renderJobs();
     });
     uploads.delete(localId);
-    const entry = { id: job.id, sha: job.sha, title, created: Date.now() };
-    await addJob(entry);
-    jobViews.set(job.id, { title, text: 'Menunggu server GitHub…', progress: 0, cancellable: true });
-    renderJobs();
-    poll(entry);
+    await markUploading(localId, title, false);
+    await onSent(job);
+    busyEnd(key, true, '✅ Upload beres, aplikasi boleh ditutup',
+      'Lagu lagi diproses di server GitHub. Buka lagi nanti, hasilnya diunduh otomatis.');
   } catch (err) {
-    uploads.delete(localId);
+    await markUploading(localId, title, false);
+    busyEnd(key, false);
+    uploads.set(localId, {
+      title,
+      progress: 0,
+      error: document.hidden ? 'Upload tadi kepotong karena aplikasi di-minimize.' : `Upload gagal: ${err.message}`,
+      retry: () => runUpload({ title, label, send, onSent }),
+    });
     renderJobs();
-    renderLibrary();
-    toast(`Upload gagal: ${err.message}`, 6000);
     if (err.status === 401 || err.status === 404) openSettings();
   }
+}
+
+function handleFile(file) {
+  if (!file) return;
+  const title = file.name.replace(/\.[^.]+$/, '');
+  runUpload({
+    title,
+    label: 'Lagi upload',
+    send: (onP) => api.upload(file, title, onP),
+    onSent: async (job) => {
+      const entry = { id: job.id, sha: job.sha, title, created: Date.now(), kind: 'new' };
+      await addJob(entry);
+      jobViews.set(job.id, { title, text: 'Menunggu server GitHub…', progress: 0, cancellable: true });
+      renderJobs();
+      poll(entry);
+    },
+  });
 }
 
 async function poll(entry) {
@@ -170,11 +254,11 @@ async function poll(entry) {
   while (polling.has(jobId)) {
     round++;
     try {
-      // Sesekali cek juga apakah proses di GitHub Actions berhenti sebelum sempat lapor.
       const s = await api.status(jobId, sha, round % 6 === 0);
       failures = 0;
       if (s.status === 'done') {
-        await download(jobId, title);
+        if (entry.kind === 'reanalyze') await finishReanalyze(entry);
+        else await download(jobId, title);
         break;
       }
       if (s.status === 'error') {
@@ -183,13 +267,15 @@ async function poll(entry) {
         break;
       }
       const elapsed = ` · ${fmt((Date.now() - entry.created) / 1000)}`;
+      const what = entry.kind === 'reanalyze' ? 'Proses ulang tempo: ' : '';
       let text;
-      if (s.status === 'queued') text = `Menunggu server GitHub…${elapsed}`;
-      else if (s.stage === 'setup') text = `${STAGE_TEXT.setup}…${elapsed}`;
-      else text = `${STAGE_TEXT[s.stage] || 'Memproses'}… ${Math.round(s.progress * 100)}%${elapsed}`;
+      if (s.status === 'queued') text = `${what}Menunggu server GitHub…${elapsed}`;
+      else if (s.stage === 'setup') text = `${what}${STAGE_TEXT.setup}…${elapsed}`;
+      else text = `${what}${STAGE_TEXT[s.stage] || 'Memproses'}… ${Math.round(s.progress * 100)}%${elapsed}`;
       jobViews.set(jobId, { title, text, progress: s.progress, cancellable: true });
       renderJobs();
     } catch (err) {
+      busyEnd(`dl:${jobId}`, false);
       if (err.status === 401 || err.status === 403 || err.status === 404 || err.status === 422) {
         jobViews.set(jobId, {
           title,
@@ -209,34 +295,70 @@ async function poll(entry) {
   polling.delete(jobId);
 }
 
+function mapFromResult(result) {
+  return {
+    mode: result.mode || 'steady',
+    offset: 0,
+    sections: (result.sections || []).map((s) => ({
+      start: s.start, bpm: s.bpm, bpb: s.bpb, odd: s.odd || {}, gap: !!s.gap, countIn: s.countIn ?? 1, gapClick: 'silent',
+    })),
+  };
+}
+
 async function download(jobId, title) {
+  const key = `dl:${jobId}`;
+  busySet(key, `Lagi nyimpen "${title}" ke HP…`);
   const result = await api.result(jobId);
-  const songId = jobId;
   for (let i = 0; i < result.stems.length; i++) {
     const stem = result.stems[i];
     jobViews.set(jobId, { title, text: `Mengunduh track ${i + 1}/${result.stems.length}…`, progress: i / result.stems.length });
+    busySet(key, `Lagi nyimpen "${title}" ke HP… track ${i + 1} dari ${result.stems.length}`);
     renderJobs();
     const blob = await api.stem(jobId, stem);
-    await db.putStem(songId, stem, blob);
+    await db.putStem(jobId, stem, blob);
   }
+  const map = result.sections ? mapFromResult(result) : null;
   const song = {
-    id: songId,
+    id: jobId,
     title: result.title || title,
     duration: result.duration,
     bpm: result.bpm,
     beats: result.beats,
+    drumBeats: result.drum_beats || [],
     stems: result.stems,
     created: Date.now(),
-    grid: { mode: 'auto', factor: 1, parity: 0, offset: 0, downbeat: result.downbeat, autoDownbeat: result.downbeat, bpb: result.beats_per_bar || 4, bpm: result.bpm, phase: result.beats[0] || 0 },
+    map,
+    autoMap: map ? clone(map) : null,
     tracks: {},
     preset: 'full',
     metro: { on: false, vol: 0.8, countIn: true },
   };
+  if (!song.map) { song.map = mapFromLegacy(song); song.autoMap = clone(song.map); }
   await db.putSong(song);
   navigator.storage?.persist?.().catch(() => {});
   api.remove(jobId);
   await dropJob(jobId, false);
-  toast(`"${song.title}" siap dilatih!`);
+  busyEnd(key, true, `✅ "${song.title}" siap dilatih!`, 'Semua udah tersimpan di HP, aplikasi boleh ditutup.');
+}
+
+async function finishReanalyze(entry) {
+  const result = await api.result(entry.id);
+  const song = await db.getSong(entry.songId);
+  if (song && result.sections) {
+    song.map = mapFromResult(result);
+    song.autoMap = clone(song.map);
+    song.drumBeats = result.drum_beats || [];
+    song.beats = result.beats;
+    song.bpm = result.bpm;
+    await db.putSong(song);
+    if (current?.id === song.id) {
+      Object.assign(current, { map: song.map, autoMap: song.autoMap, drumBeats: song.drumBeats, bpm: song.bpm });
+      applyGrid(false);
+    }
+  }
+  api.remove(entry.id);
+  await dropJob(entry.id, false);
+  toast(`Deteksi tempo "${entry.title}" udah diperbarui`, 4000);
 }
 
 async function resumeJobs() {
@@ -245,110 +367,146 @@ async function resumeJobs() {
     jobViews.set(j.id, { title: j.title, text: 'Mengecek status…', progress: 0 });
     poll(j);
   }
-  renderJobs();
-}
-
-// ---------- grid ketukan ----------
-function computeBeats(song) {
-  const g = song.grid;
-  let b;
-  if (g.mode === 'manual') {
-    const per = 60 / g.bpm;
-    b = [];
-    for (let t = ((g.phase % per) + per) % per; t < song.duration; t += per) b.push(t);
-  } else {
-    b = song.beats.slice();
-    if (g.factor === 2) {
-      const o = [];
-      for (let i = 0; i < b.length; i++) {
-        o.push(b[i]);
-        if (i + 1 < b.length) o.push((b[i] + b[i + 1]) / 2);
-      }
-      b = o;
-    } else if (g.factor === 0.5) {
-      b = b.filter((_, i) => i % 2 === g.parity);
-    }
+  // Upload yang kepotong karena aplikasi ditutup
+  const cut = (await db.get('uploading')) || [];
+  for (const u of cut) {
+    uploads.set(u.localId, { title: u.title, progress: 0, error: `Upload "${u.title}" tadi nggak selesai (aplikasi ketutup). Pilih lagunya lagi ya.` });
   }
-  if (g.offset) b = b.map((t) => t + g.offset);
-  return b;
+  await db.set('uploading', []);
+  renderJobs();
+  renderLibrary();
 }
 
-function currentBpm(song) {
-  const g = song.grid;
-  return g.mode === 'manual' ? g.bpm : song.bpm * g.factor;
-}
-
+// ---------- peta tempo ----------
 function applyGrid(save = true) {
-  const g = current.grid;
-  current.computed = computeBeats(current);
-  player.setGrid(current.computed, g.bpb, g.downbeat);
-  $('bpmLabel').textContent = `${currentBpm(current).toFixed(1).replace(/\.0$/, '')} BPM`;
-  $('offLabel').textContent = `${Math.round(g.offset * 1000)} ms`;
-  $('factorLabel').textContent = g.mode === 'manual' ? 'manual' : ({ 1: 'normal', 2: '×2', 0.5: '÷2' }[g.factor]);
-  $('half').disabled = g.mode === 'manual' || g.factor === 0.5;
-  $('double').disabled = g.mode === 'manual' || g.factor === 2;
-  $('manualRow').hidden = g.mode !== 'manual';
-  $('bpmManual').textContent = g.bpm.toFixed(1).replace(/\.0$/, '');
-  for (const b of $('bpbSeg').children) b.classList.toggle('on', Number(b.dataset.v) === g.bpb);
-  renderDots();
+  current.grid = buildGrid(current.map, current.duration, current.drumBeats || []);
+  player.setGrid(current.grid.times, current.grid.info);
   waveCache = null;
+  lastEditorKey = '';
+  renderEditor();
   if (save) saveSong();
 }
 
-function shiftDownbeat(d) {
+function curSecIndex() {
+  return sectionIndexAt(current.map, player.position);
+}
+
+function secs() {
+  current.map.sections = sortedSections(current.map);
+  return current.map.sections;
+}
+
+function beatAtPosition() {
   const g = current.grid;
-  g.downbeat = (((g.downbeat + d) % g.bpb) + g.bpb) % g.bpb;
+  const idx = Math.max(0, lowerBound(g.times, player.position + 0.001) - 1);
+  return { idx, info: g.info[idx] };
+}
+
+function mainBpm() {
+  const s = secs();
+  if (!s.length) return 0;
+  let best = s[0], bestLen = -1;
+  s.forEach((sec, i) => {
+    const len = (s[i + 1]?.start ?? current.duration) - sec.start;
+    if (len > bestLen) { best = sec; bestLen = len; }
+  });
+  return best.bpm;
+}
+
+let lastEditorKey = '';
+function renderEditor() {
+  if (!current) return;
+  const s = secs();
+  const i = curSecIndex();
+  const sec = s[i];
+  const { info } = beatAtPosition();
+  const key = `${i}|${info?.bar}|${JSON.stringify(current.map)}`;
+  if (key === lastEditorKey) return;
+  lastEditorKey = key;
+
+  $('mapSummary').textContent = s.length > 1 ? `${s.length} bagian` : `${r1(sec.bpm)} BPM ${sec.bpb}/4`;
+  for (const b of $('modeSeg').children) b.classList.toggle('on', b.dataset.v === current.map.mode);
+  $('offLabel').textContent = `${Math.round((current.map.offset || 0) * 1000)} ms`;
+
+  const chips = $('secChips');
+  chips.innerHTML = '';
+  s.forEach((x, k) => {
+    const c = document.createElement('button');
+    c.className = 'chip' + (k === i ? ' on' : '');
+    c.style.setProperty('--c', SEC_COLORS[k % SEC_COLORS.length]);
+    c.innerHTML = `<b>${k + 1}</b> ${r1(x.bpm)} BPM · ${x.bpb}/4${x.gap ? ' · jeda' : ''}<small>${fmt(x.start)}</small>`;
+    c.onclick = () => { player.seek(Math.max(0, x.start - (x.gap ? 2.5 : 0.05))); lastEditorKey = ''; renderEditor(); };
+    chips.appendChild(c);
+  });
+
+  $('secTitle').textContent = `Bagian ${i + 1}${s.length > 1 ? ` dari ${s.length}` : ''} · ketukan "1" di ${fmtMs(sec.start)}`;
+  $('secBpm').textContent = r1(sec.bpm).toFixed(1);
+  for (const b of $('secBpb').children) b.classList.toggle('on', Number(b.dataset.v) === sec.bpb);
+  $('gapRows').hidden = i === 0;
+  $('secGap').checked = !!sec.gap;
+  $('gapDetail').hidden = !sec.gap;
+  for (const b of $('ciSeg').children) b.classList.toggle('on', Number(b.dataset.v) === (sec.countIn ?? 1));
+  for (const b of $('gapClickSeg').children) b.classList.toggle('on', b.dataset.v === (sec.gapClick || 'silent'));
+  $('secDelete').hidden = i === 0;
+
+  const barRow = $('barRow');
+  if (info && !info.count && info.lbar >= 0) {
+    barRow.classList.remove('disabled');
+    $('barLabel').textContent = `Bar ${info.bar}`;
+    for (const b of $('barSeg').children) b.classList.toggle('on', Number(b.dataset.v) === info.beats);
+  } else {
+    barRow.classList.add('disabled');
+    $('barLabel').textContent = info?.count ? 'Hitungan masuk' : 'Intro';
+    for (const b of $('barSeg').children) b.classList.remove('on');
+  }
+  const odd = Object.entries(sec.odd || {});
+  $('oddList').textContent = odd.length ? `Bar ganjil di bagian ini: ${odd.map(([k, v]) => `bar ke-${Number(k) + 1} (${v} ketukan)`).join(', ')}` : '';
+  $('bpmLabel').textContent = `${r1(sec.bpm).toFixed(1).replace(/\.0$/, '')} BPM`;
+}
+
+function editSection(fn) {
+  const s = secs();
+  const i = curSecIndex();
+  fn(s[i], i, s);
+  current.map.sections = sortedSections(current.map);
   applyGrid();
 }
 
-function setFactor(next) {
-  const g = current.grid;
-  if (g.factor === 1 && next === 2) g.downbeat = 2 * g.downbeat;
-  else if (g.factor === 2 && next === 1) g.downbeat = Math.floor(g.downbeat / 2);
-  else if (g.factor === 1 && next === 0.5) { g.parity = g.downbeat % 2; g.downbeat = Math.floor(g.downbeat / 2); }
-  else if (g.factor === 0.5 && next === 1) g.downbeat = 2 * g.downbeat + g.parity;
-  else return;
-  g.factor = next;
-  g.downbeat %= g.bpb;
-  applyGrid();
+function setSectionBpm(sec, bpm) {
+  sec.bpm = Math.min(300, Math.max(30, Math.round(bpm * 1000) / 1000));
 }
 
 let taps = [];
 function tap() {
-  const g = current.grid;
   const playing = player.playing && !player.countingIn;
   const t = playing ? player.position : performance.now() / 1000;
   if (taps.length && (t - taps[taps.length - 1] > 2.5 || t < taps[taps.length - 1])) taps = [];
   taps.push(t);
-  $('tapBtn').classList.remove('hit');
-  void $('tapBtn').offsetWidth;
-  $('tapBtn').classList.add('hit');
-  if (taps.length < 4) {
-    $('tapBtn').textContent = `TAP ${taps.length}/4`;
-    return;
-  }
-  // Regresi linear: waktu tap = phase + i * periode
+  const btn = $('tapBtn');
+  btn.classList.remove('hit');
+  void btn.offsetWidth;
+  btn.classList.add('hit');
+  if (taps.length < 4) { btn.textContent = `TAP ${taps.length}/4`; return; }
   const n = taps.length;
-  const xs = taps.map((_, i) => i);
   const mx = (n - 1) / 2;
   const my = taps.reduce((a, b) => a + b, 0) / n;
   let num = 0, den = 0;
-  for (let i = 0; i < n; i++) { num += (xs[i] - mx) * (taps[i] - my); den += (xs[i] - mx) ** 2; }
+  for (let i = 0; i < n; i++) { num += (i - mx) * (taps[i] - my); den += (i - mx) ** 2; }
   const per = num / den;
   if (!(per > 0.2 && per < 2)) return;
-  g.mode = 'manual';
-  g.bpm = Math.round((60 / per) * 10) / 10;
-  g.offset = 0;
-  if (playing) {
-    g.phase = my - mx * per; // ketukan tap pertama
-    const beats = computeBeats(current);
-    const first = lowerBound(beats, taps[0] - per / 2);
-    g.downbeat = ((first % g.bpb) + g.bpb) % g.bpb;
-  } else if (!Number.isFinite(g.phase)) {
-    g.phase = current.beats[0] || 0;
-  }
-  $('tapBtn').textContent = `TAP · ${g.bpm} BPM`;
-  applyGrid();
+  editSection((sec, i, s) => {
+    setSectionBpm(sec, 60 / per);
+    if (playing) {
+      // tap pertama = ketukan "1"
+      const first = my - mx * per;
+      const bar = per * sec.bpb;
+      let start = first - Math.round((first - sec.start) / bar) * bar;
+      const prevStart = i > 0 ? s[i - 1].start + 0.2 : -Infinity;
+      while (start < prevStart) start += bar;
+      sec.start = Math.max(0, start);
+    }
+  });
+  btn.textContent = `TAP · ${r1(60 / per)} BPM`;
 }
 
 // ---------- pemutar ----------
@@ -370,6 +528,11 @@ async function openSong(id) {
     return;
   }
   loading(null);
+  if (!song.map) {
+    song.map = mapFromLegacy(song);
+    song.autoMap = clone(song.map);
+    song.legacy = true;
+  }
   current = song;
   taps = [];
   $('tapBtn').textContent = 'TAP';
@@ -379,10 +542,11 @@ async function openSong(id) {
   $('countIn').checked = song.metro.countIn;
   $('metroVol').value = Math.round(song.metro.vol * 100);
   $('timeTotal').textContent = fmt(player.duration);
+  $('legacyNote').hidden = !song.legacy;
   renderTracks();
   renderPresets();
-  applyGrid(false);
   peaksCache = null;
+  applyGrid(false);
   showView('player', song.title);
 }
 
@@ -393,7 +557,7 @@ function renderTracks() {
     const info = STEM_INFO[name] || { label: name, color: '#999' };
     const t = player.tracks[name];
     const row = document.createElement('div');
-    row.className = 'track' + (t.mute ? ' muted' : '');
+    row.className = 'track' + (t.mute ? ' muted' : '') + (t.solo ? ' soloed' : '');
     row.style.setProperty('--c', info.color);
     row.innerHTML = `
       <span class="track-name">${info.label}</span>
@@ -403,8 +567,8 @@ function renderTracks() {
       <span class="track-vol">${Math.round(t.vol * 100)}</span>`;
     const [mBtn, sBtn] = row.querySelectorAll('button');
     const range = row.querySelector('input');
-    mBtn.onclick = () => { updateTrack(name, { mute: !player.tracks[name].mute }); };
-    sBtn.onclick = () => { updateTrack(name, { solo: !player.tracks[name].solo }); };
+    mBtn.onclick = () => updateTrack(name, { mute: !player.tracks[name].mute });
+    sBtn.onclick = () => updateTrack(name, { solo: !player.tracks[name].solo });
     range.oninput = () => {
       row.querySelector('.track-vol').textContent = range.value;
       updateTrack(name, { vol: range.value / 100 }, false);
@@ -412,11 +576,7 @@ function renderTracks() {
     range.onchange = () => saveSong();
     box.appendChild(row);
   }
-  const anySolo = Object.values(player.tracks).some((t) => t.solo);
-  box.classList.toggle('has-solo', anySolo);
-  for (const [i, name] of current.stems.entries()) {
-    box.children[i].classList.toggle('soloed', !!player.tracks[name].solo);
-  }
+  box.classList.toggle('has-solo', Object.values(player.tracks).some((t) => t.solo));
 }
 
 function updateTrack(name, patch, rerender = true) {
@@ -448,10 +608,11 @@ function renderPresets() {
   for (const b of $('presets').children) b.classList.toggle('on', b.dataset.preset === current.preset);
 }
 
-function renderDots() {
+function renderDots(n) {
   const box = $('beatDots');
+  if (box.children.length === n) return;
   box.innerHTML = '';
-  for (let i = 0; i < current.grid.bpb; i++) {
+  for (let i = 0; i < n; i++) {
     const d = document.createElement('span');
     if (i === 0) d.className = 'accent';
     box.appendChild(d);
@@ -463,7 +624,7 @@ function saveSong() {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
     if (!current) return;
-    const { computed, ...song } = current;
+    const { grid, legacy, ...song } = current;
     db.putSong(song).catch(() => {});
   }, 300);
 }
@@ -481,27 +642,38 @@ function drawWave() {
     waveCache = null;
   }
   const W = canvas.width, H = canvas.height;
+  const D = player.duration || 1;
   if (!waveCache) {
     const bins = Math.floor(W / (3 * dpr));
     if (!peaksCache || peaksCache.length !== bins) peaksCache = player.peaks(bins);
+    const band = 6 * dpr;
     const mk = (color, tick) => {
       const c = document.createElement('canvas');
       c.width = W; c.height = H;
       const g = c.getContext('2d');
       g.fillStyle = color;
       const bw = W / bins;
+      const area = H - band - 8 * dpr;
       for (let i = 0; i < bins; i++) {
-        const ph = Math.max(2 * dpr, peaksCache[i] * (H - 14 * dpr));
-        g.fillRect(i * bw + 0.5 * dpr, (H - ph) / 2 + 4 * dpr, Math.max(1, bw - 1 * dpr), ph);
+        const ph = Math.max(2 * dpr, peaksCache[i] * (area - 6 * dpr));
+        g.fillRect(i * bw + 0.5 * dpr, 6 * dpr + (area - ph) / 2, Math.max(1, bw - 1 * dpr), ph);
       }
-      // garis ketukan 1 di tiap bar
+      // garis ketukan "1" tiap bar
       g.fillStyle = tick;
-      const beats = current.computed;
-      for (let i = 0; i < beats.length; i++) {
-        if (player.inBar(i) !== 0) continue;
-        const x = (beats[i] / player.duration) * W;
-        g.fillRect(x, 0, 1 * dpr, 5 * dpr);
-      }
+      current.grid.info.forEach((b, i) => {
+        if (b.beat !== 0) return;
+        g.fillRect((current.grid.times[i] / D) * W, 0, 1 * dpr, 5 * dpr);
+      });
+      // pita warna per bagian tempo + tanda jeda
+      const s = secs();
+      s.forEach((sec, k) => {
+        const x0 = k === 0 ? 0 : (sec.start / D) * W;
+        const x1 = k + 1 < s.length ? (s[k + 1].start / D) * W : W;
+        g.fillStyle = SEC_COLORS[k % SEC_COLORS.length];
+        g.globalAlpha = 0.75;
+        g.fillRect(x0, H - band, Math.max(1, x1 - x0 - 2 * dpr), band);
+        g.globalAlpha = 1;
+      });
       return c;
     };
     waveCache = { dim: mk('#3a3f4b', '#5b6170'), lit: mk('#ffb020', '#ffd27a') };
@@ -509,8 +681,8 @@ function drawWave() {
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, W, H);
   ctx.drawImage(waveCache.dim, 0, 0);
-  const x = (player.position / (player.duration || 1)) * W;
-  ctx.drawImage(waveCache.lit, 0, 0, x, H, 0, 0, x, H);
+  const x = (player.position / D) * W;
+  if (x > 0) ctx.drawImage(waveCache.lit, 0, 0, x, H - 6 * dpr, 0, 0, x, H - 6 * dpr);
   ctx.fillStyle = '#fff';
   ctx.fillRect(x - dpr, 0, 2 * dpr, H);
 }
@@ -521,19 +693,20 @@ function frame() {
     const pos = player.position;
     $('timeNow').textContent = fmt(pos);
     document.body.classList.toggle('playing', player.playing);
-    const beats = current.computed;
-    const idx = Math.max(0, lowerBound(beats, pos + 0.001) - 1);
-    const bar = Math.floor((idx - current.grid.downbeat) / current.grid.bpb) + 1;
+    const { info } = beatAtPosition();
     const b = player.currentBeat();
-    $('barInfo').textContent = player.countingIn
-      ? 'Count-in…'
-      : `Bar ${Math.max(1, bar)} · ${player.inBar(idx) + 1}`;
+    renderDots((b && player.ctx.currentTime - b.t < 1.5 ? b.len : info?.beats) || 4);
+    if (player.countingIn) $('barInfo').textContent = 'Count-in…';
+    else if (!info) $('barInfo').textContent = 'Bar 1';
+    else if (info.count) $('barInfo').textContent = 'Hitungan masuk…';
+    else $('barInfo').textContent = `Bar ${info.bar} · ${info.beat + 1}`;
     const dots = $('beatDots').children;
     for (let i = 0; i < dots.length; i++) {
       const on = b && b.n === i && player.ctx.currentTime - b.t < 0.18;
       dots[i].classList.toggle('lit', !!on);
       dots[i].classList.toggle('count', !!(on && b.count));
     }
+    renderEditor();
   }
   requestAnimationFrame(frame);
 }
@@ -565,6 +738,155 @@ async function togglePlay() {
   } else {
     await player.play(current.metro.countIn);
     keepAwake(true);
+  }
+}
+
+// ---------- proses ulang deteksi ----------
+async function reanalyze() {
+  if (!confirm('Proses ulang deteksi tempo lagu ini?\n\nButuh internet, ±2–3 menit. Koreksi manual di Peta Tempo bakal diganti hasil deteksi baru.')) return;
+  const song = current;
+  const blobs = {};
+  for (const stem of song.stems) {
+    const blob = await db.getStem(song.id, stem);
+    if (blob) blobs[stem] = blob;
+  }
+  runUpload({
+    title: song.title,
+    label: 'Lagi ngirim track buat proses ulang',
+    send: (onP) => api.reanalyze(blobs, song.title, onP),
+    onSent: async (job) => {
+      const entry = { id: job.id, sha: job.sha, title: song.title, created: Date.now(), kind: 'reanalyze', songId: song.id };
+      await addJob(entry);
+      jobViews.set(job.id, { title: song.title, text: 'Proses ulang tempo: menunggu server GitHub…', progress: 0, cancellable: true });
+      renderJobs();
+      poll(entry);
+      toast('Dikirim! Progress-nya kelihatan di daftar lagu.', 4000);
+    },
+  });
+}
+
+// ---------- ekspor ----------
+const exportState = { kind: 'click', format: 'wav', stems: ['piano', 'other'], withClick: false, countIn: true, blob: null, name: '' };
+
+function openExport() {
+  const prefs = current.exportPrefs || {};
+  Object.assign(exportState, { stems: ['piano', 'other'], ...prefs, blob: null });
+  for (const r of document.querySelectorAll('input[name=exKind]')) r.checked = r.value === exportState.kind;
+  const box = $('exStems');
+  box.innerHTML = '';
+  for (const name of current.stems) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'chip' + (exportState.stems.includes(name) ? ' on' : '');
+    b.style.setProperty('--c', STEM_INFO[name]?.color || '#999');
+    b.textContent = STEM_INFO[name]?.label || name;
+    b.onclick = () => {
+      const i = exportState.stems.indexOf(name);
+      if (i >= 0) exportState.stems.splice(i, 1); else exportState.stems.push(name);
+      b.classList.toggle('on', i < 0);
+      updateExportUi();
+    };
+    box.appendChild(b);
+  }
+  $('exClick').checked = exportState.withClick;
+  $('exCount').checked = exportState.countIn;
+  $('exStatus').textContent = '';
+  $('exDone').hidden = true;
+  $('exGo').disabled = false;
+  updateExportUi();
+  $('exportDlg').showModal();
+}
+
+function updateExportUi() {
+  const k = exportState.kind;
+  $('exStemsField').hidden = !(k === 'sq' || k === 'lr');
+  $('exClickField').hidden = k !== 'mix';
+  for (const b of $('exFormat').children) b.classList.toggle('on', b.dataset.v === exportState.format);
+  const mb = estimateSize(k, exportState.format, current.duration);
+  $('exSize').textContent = `Perkiraan ukuran file: ±${mb < 10 ? mb.toFixed(1) : Math.round(mb)} MB`;
+  $('exGo').disabled = (k === 'sq' || k === 'lr') && !exportState.stems.length;
+}
+
+function exportGains() {
+  const k = exportState.kind;
+  const gains = {};
+  const anySolo = Object.values(player.tracks).some((t) => t.solo);
+  for (const name of current.stems) {
+    if (k === 'mix') {
+      const t = player.tracks[name] || { vol: 1 };
+      gains[name] = t.mute || (anySolo && !t.solo) ? 0 : t.vol;
+    } else {
+      gains[name] = exportState.stems.includes(name) ? 1 : 0;
+    }
+  }
+  return gains;
+}
+
+async function runExport() {
+  const k = exportState.kind;
+  current.exportPrefs = { kind: k, format: exportState.format, stems: [...exportState.stems], withClick: exportState.withClick, countIn: exportState.countIn };
+  saveSong();
+  const safeTitle = current.title.replace(/[\\/:*?"<>|]+/g, '').trim() || 'Lagu';
+  const name = `${safeTitle} - ${KINDS[k]}.${exportState.format}`;
+  const key = 'export';
+  $('exGo').disabled = true;
+  $('exDone').hidden = true;
+  const status = (t) => { $('exStatus').textContent = t; busySet(key, t); };
+  try {
+    player.pause();
+    keepAwake(true);
+    status(`Lagi bikin file "${name}"… 0%`);
+    const buf = await renderMix({
+      buffers: player.buffers,
+      gains: exportGains(),
+      grid: current.grid,
+      kind: k,
+      withClick: exportState.withClick,
+      countIn: exportState.countIn,
+      clickVol: current.metro.vol,
+      duration: player.duration,
+      onProgress: (p) => status(`Lagi bikin file "${name}"… ${Math.round(p * (exportState.format === 'mp3' ? 50 : 95))}%`),
+    });
+    let blob;
+    if (exportState.format === 'mp3') {
+      blob = await toMp3(buf, (p) => status(`Lagi bikin file "${name}"… ${50 + Math.round(p * 49)}%`));
+    } else {
+      blob = toWav(buf);
+    }
+    exportState.blob = blob;
+    exportState.name = name;
+    saveBlob(blob, name);
+    $('exStatus').textContent = `✅ "${name}" (${(blob.size / 1048576).toFixed(1)} MB) tersimpan di folder Download.`;
+    $('exDone').hidden = false;
+    busyEnd(key, true, '✅ File tersimpan di folder Download', 'Aplikasi boleh ditutup.');
+  } catch (err) {
+    $('exStatus').textContent = `Gagal bikin file: ${err.message}`;
+    busyEnd(key, false);
+  } finally {
+    $('exGo').disabled = false;
+    keepAwake(false);
+  }
+}
+
+function saveBlob(blob, name) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+
+async function shareBlob() {
+  const { blob, name } = exportState;
+  if (!blob) return;
+  const file = new File([blob], name, { type: blob.type });
+  if (navigator.canShare?.({ files: [file] })) {
+    try { await navigator.share({ files: [file], title: name }); } catch { /* dibatalkan */ }
+  } else {
+    toast('HP ini nggak bisa share langsung. File udah ada di folder Download.', 4000);
   }
 }
 
@@ -615,7 +937,16 @@ async function checkConnection() {
   }
 }
 
+const cleanRepo = (v) => v.trim().replace(/^https?:\/\/github\.com\//, '').replace(/\/+$/, '');
+
 // ---------- event ----------
+function seg(id, fn) {
+  $(id).addEventListener('click', (e) => {
+    const b = e.target.closest('button');
+    if (b && b.dataset.v !== undefined) fn(b.dataset.v);
+  });
+}
+
 function bind() {
   $('addBtn').onclick = () => $('fileInput').click();
   $('fileInput').onchange = (e) => {
@@ -652,41 +983,89 @@ function bind() {
     player.setMetronome({ vol: current.metro.vol });
   };
   $('metroVol').onchange = () => saveSong();
-  $('bpbSeg').onclick = (e) => {
-    const v = Number(e.target.closest('button')?.dataset.v);
-    if (!v) return;
-    current.grid.bpb = v;
-    current.grid.downbeat %= v;
+
+  // --- peta tempo
+  seg('modeSeg', (v) => { current.map.mode = v; applyGrid(); toast(v === 'steady' ? 'Klik: tempo rata per bagian' : 'Klik: ngikutin pukulan drum'); });
+  $('offMinus').onclick = () => { current.map.offset = Math.round(((current.map.offset || 0) - 0.01) * 1000) / 1000; applyGrid(); };
+  $('offPlus').onclick = () => { current.map.offset = Math.round(((current.map.offset || 0) + 0.01) * 1000) / 1000; applyGrid(); };
+  $('bpmM1').onclick = () => editSection((s) => setSectionBpm(s, s.bpm - 1));
+  $('bpmM01').onclick = () => editSection((s) => setSectionBpm(s, s.bpm - 0.1));
+  $('bpmP01').onclick = () => editSection((s) => setSectionBpm(s, s.bpm + 0.1));
+  $('bpmP1').onclick = () => editSection((s) => setSectionBpm(s, s.bpm + 1));
+  $('secHalf').onclick = () => editSection((s) => {
+    setSectionBpm(s, s.bpm / 2);
+    s.odd = Object.fromEntries(Object.entries(s.odd || {}).map(([k, v]) => [k, Math.max(1, Math.round(v / 2))]));
+  });
+  $('secDouble').onclick = () => editSection((s) => {
+    setSectionBpm(s, s.bpm * 2);
+    s.odd = Object.fromEntries(Object.entries(s.odd || {}).map(([k, v]) => [k, Math.min(7, v * 2)]));
+  });
+  seg('secBpb', (v) => editSection((s) => { s.bpb = Number(v); s.odd = {}; }));
+  $('secBeatPrev').onclick = () => editSection((s) => { s.start = Math.max(0, s.start - 60 / s.bpm); });
+  $('secBeatNext').onclick = () => editSection((s) => { s.start += 60 / s.bpm; });
+  $('secMsPrev').onclick = () => editSection((s) => { s.start = Math.max(0, s.start - 0.01); });
+  $('secMsNext').onclick = () => editSection((s) => { s.start += 0.01; });
+  $('secGap').onchange = (e) => editSection((s) => { s.gap = e.target.checked; });
+  seg('ciSeg', (v) => editSection((s) => { s.countIn = Number(v); }));
+  seg('gapClickSeg', (v) => editSection((s) => { s.gapClick = v; }));
+  $('secDelete').onclick = () => {
+    const i = curSecIndex();
+    if (i === 0 || !confirm(`Hapus bagian ${i + 1}? Tempo bagian sebelumnya bakal lanjut sampai sini.`)) return;
+    current.map.sections.splice(i, 1);
     applyGrid();
   };
-
-  $('dbPrev').onclick = () => shiftDownbeat(-1);
-  $('dbNext').onclick = () => shiftDownbeat(1);
-  $('offMinus').onclick = () => { current.grid.offset = Math.round((current.grid.offset - 0.01) * 1000) / 1000; applyGrid(); };
-  $('offPlus').onclick = () => { current.grid.offset = Math.round((current.grid.offset + 0.01) * 1000) / 1000; applyGrid(); };
-  $('half').onclick = () => setFactor(current.grid.factor === 2 ? 1 : 0.5);
-  $('double').onclick = () => setFactor(current.grid.factor === 0.5 ? 1 : 2);
-  $('bpmMinus').onclick = () => { current.grid.bpm = Math.max(30, Math.round((current.grid.bpm - 0.5) * 10) / 10); applyGrid(); };
-  $('bpmPlus').onclick = () => { current.grid.bpm = Math.min(300, Math.round((current.grid.bpm + 0.5) * 10) / 10); applyGrid(); };
+  $('secNew').onclick = () => {
+    const s = secs();
+    const i = curSecIndex();
+    const pos = player.position;
+    if (pos - s[i].start < 0.3) { toast('Geser dulu ke titik tempo berubah (ketukan "1" bagian baru)'); return; }
+    s.push({ start: pos, bpm: s[i].bpm, bpb: s[i].bpb, odd: {}, gap: false, countIn: 1, gapClick: 'silent' });
+    applyGrid();
+    toast('Bagian baru dibuat. Atur BPM-nya, atau TAP sambil lagu diputar.', 4000);
+  };
+  seg('barSeg', (v) => {
+    const { info } = beatAtPosition();
+    if (!info || info.count || info.lbar < 0) return;
+    const sec = secs()[info.sec];
+    sec.odd = sec.odd || {};
+    if (Number(v) === sec.bpb) delete sec.odd[info.lbar];
+    else sec.odd[info.lbar] = Number(v);
+    applyGrid();
+  });
   $('tapBtn').addEventListener('pointerdown', (e) => { e.preventDefault(); tap(); });
-  $('gridReset').onclick = () => {
-    const g = current.grid;
-    Object.assign(g, { mode: 'auto', factor: 1, parity: 0, offset: 0, downbeat: (g.autoDownbeat ?? 0) % g.bpb });
+  $('mapReset').onclick = () => {
+    if (!confirm('Buang semua koreksi dan balik ke hasil deteksi otomatis?')) return;
+    current.map = clone(current.autoMap || mapFromLegacy(current));
     taps = [];
     $('tapBtn').textContent = 'TAP';
     applyGrid();
-    toast('Grid balik ke deteksi otomatis');
+    toast('Peta tempo balik ke hasil deteksi');
   };
+  $('mapReanalyze').onclick = reanalyze;
+  $('legacyReanalyze').onclick = reanalyze;
 
+  // --- ekspor
+  $('exportBtn').onclick = openExport;
+  document.querySelectorAll('input[name=exKind]').forEach((r) => {
+    r.onchange = () => { exportState.kind = r.value; updateExportUi(); };
+  });
+  seg('exFormat', (v) => { exportState.format = v; updateExportUi(); });
+  $('exClick').onchange = (e) => { exportState.withClick = e.target.checked; };
+  $('exCount').onchange = (e) => { exportState.countIn = e.target.checked; };
+  $('exGo').onclick = runExport;
+  $('exSave').onclick = () => exportState.blob && saveBlob(exportState.blob, exportState.name);
+  $('exShare').onclick = shareBlob;
+
+  // --- pengaturan
   $('settingsBtn').onclick = openSettings;
   $('checkBtn').onclick = () => {
     settings.token = $('setToken').value.trim();
-    settings.repo = $('setRepo').value.trim().replace(/^https?:\/\/github\.com\//, '').replace(/\/+$/, '');
+    settings.repo = cleanRepo($('setRepo').value);
     checkConnection();
   };
   $('settingsDlg').addEventListener('close', () => {
     if ($('settingsDlg').returnValue !== 'save') return;
-    settings.repo = $('setRepo').value.trim().replace(/^https?:\/\/github\.com\//, '').replace(/\/+$/, '');
+    settings.repo = cleanRepo($('setRepo').value);
     settings.token = $('setToken').value.trim();
     settings.rate = Number($('setRate').value);
     saveSettings();
@@ -707,7 +1086,6 @@ function bind() {
 // ---------- mulai ----------
 loadSettings();
 bind();
-renderLibrary();
 resumeJobs();
 requestAnimationFrame(frame);
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});

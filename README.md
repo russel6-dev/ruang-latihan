@@ -5,7 +5,11 @@ Aplikasi latihan band buat HP (PWA):
 - **Pisah 6 instrumen** (vokal, drum, bass, gitar, piano, lainnya) pakai model AI Demucs `htdemucs_6s`
 - **Mixer**: mute / solo / volume per track, plus preset *Minus gitar*, *Minus bass*, *Minus drum*
 - **Metronome otomatis** yang ngikutin ketukan asli lagu (bukan BPM rata), aksen ketukan 1, count-in
-- **Koreksi ketukan**: geser ketukan "1", geser halus ±10 ms, tempo ×2 / ÷2, tap tempo
+- **Peta tempo**: deteksi otomatis bagian dengan tempo berbeda, jeda sebelum perubahan tempo (dengan 1 bar hitungan tempo baru), bar ganjil, birama 3/4 & 4/4
+- **Mode klik**: *Tempo tetap* (rata per bagian — cocok lagu studio) atau *Ikuti drummer*
+- **Editor peta tempo**: BPM per bagian, ×2/÷2, birama, geser ketukan "1", bar ganjil, bagian baru, tap tempo
+- **Ekspor** (di HP, offline): klik saja, sequencer saja, sesuai mixer, atau **klik kiri + SQ kanan** — WAV atau MP3, opsional count-in
+- Peringatan "jangan tutup aplikasi" selama upload / unduh / ekspor
 - Hasil disimpan di HP, jadi latihan bisa **offline**
 
 ## Cara kerja (gratis, pakai GitHub)
@@ -30,6 +34,7 @@ HP
 | `.github/workflows/process.yml` | Workflow pemroses lagu |
 | `.github/workflows/pages.yml` | Menerbitkan `web/` ke GitHub Pages |
 | `tools/make_icons.py` | Bikin ikon aplikasi |
+| `web/vendor/lame.min.js` | Encoder MP3 [lamejs](https://github.com/zhuker/lamejs) (LGPL-3.0, lihat `LICENSE-lamejs.txt`) |
 
 ## Setup sekali
 
