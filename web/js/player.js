@@ -72,6 +72,7 @@ export class Player {
     for (const g of Object.values(this.gains)) g.disconnect();
     this.buffers = {};
     this.gains = {};
+    this.extra = null;
     this.duration = 0;
     this.pos = 0;
   }
@@ -118,6 +119,20 @@ export class Player {
     return out;
   }
 
+  // Track tambahan (rekaman): mulai di posisi lagu startAt (detik), boleh di tengah lagu.
+  setExtra(buffer, startAt = 0) {
+    if (!this.gains.take) {
+      const g = this.ctx.createGain();
+      g.connect(this.master);
+      this.gains.take = g;
+    }
+    const was = this.playing;
+    if (was) this.pause();
+    this.extra = buffer ? { buffer, startAt } : null;
+    this.applyGains(true);
+    if (was) this.play(false);
+  }
+
   setTrack(name, patch) {
     this.tracks[name] = { vol: 1, mute: false, solo: false, ...this.tracks[name], ...patch };
     this.applyGains();
@@ -128,7 +143,8 @@ export class Player {
     const anySolo = Object.values(this.tracks).some((t) => t.solo);
     for (const [name, g] of Object.entries(this.gains)) {
       const t = this.tracks[name] || { vol: 1 };
-      const v = t.mute || (anySolo && !t.solo) ? 0 : t.vol;
+      let v = t.mute || (anySolo && !t.solo) ? 0 : t.vol;
+      if (name === 'take' && !this.extra) v = 0;
       if (instant) g.gain.value = v;
       else g.gain.setTargetAtTime(v, this.ctx.currentTime, 0.015);
     }
@@ -199,6 +215,16 @@ export class Player {
       src.connect(this.gains[name]);
       src.start(startCtx, p);
       this.sources.push(src);
+    }
+    if (this.extra && this.gains.take) {
+      const q = p - this.extra.startAt;
+      if (q < this.extra.buffer.duration) {
+        const src = this.ctx.createBufferSource();
+        src.buffer = this.extra.buffer;
+        src.connect(this.gains.take);
+        if (q >= 0) src.start(startCtx, q); else src.start(startCtx - q, 0);
+        this.sources.push(src);
+      }
     }
     this.nextBeat = idx;
     this.playing = true;

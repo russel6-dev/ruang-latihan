@@ -90,6 +90,59 @@
       <div class="section-label">Mixer</div>
       <div id="tracks" class="tracks"></div>
 
+      <div class="section-label">Rekaman</div>
+      <div class="panel" id="recPanel">
+        <div class="row">
+          <span class="row-label">Setup</span>
+          <div class="seg wide" id="recSetupSeg"><button data-v="usb">USB / Pocket Amp</button><button data-v="mic">Mic HP</button></div>
+        </div>
+        <p class="hint" id="recSetupHint"></p>
+        <div class="row">
+          <span class="row-label">Input</span>
+          <span id="recInputName" class="input-name">belum aktif</span>
+          <button id="recInputBtn" class="ghost small">Aktifkan</button>
+        </div>
+        <div id="recMeterWrap" class="meter-wrap" hidden>
+          <div class="meter"><div id="recMeter"></div></div>
+          <span id="recClip" class="clip-label" hidden>PECAH! kecilin volume</span>
+        </div>
+        <p class="hint warn-text" id="recWarn"></p>
+        <div class="row">
+          <span class="row-label">Delay</span>
+          <span id="recLatency">belum dikalibrasi</span>
+          <button id="recCalBtn" class="ghost small">Kalibrasi</button>
+        </div>
+        <div class="row">
+          <span class="row-label">Video</span>
+          <div class="seg wide" id="recVideoSeg"><button data-v="none">Tanpa</button><button data-v="front">Depan</button><button data-v="back">Belakang</button></div>
+        </div>
+        <div class="row" id="recQualityRow">
+          <span class="row-label">Kualitas video</span>
+          <div class="seg wide" id="recQualitySeg"><button data-v="1080">1080p</button><button data-v="720">720p (lebih ringan)</button></div>
+        </div>
+        <button id="recBtn" class="rec-btn"><span class="rec-dot"></span> Rekam dari posisi ini</button>
+        <p class="hint" id="recStatus"></p>
+        <p class="hint">Backing ngikutin mixer (misal <b>Minus gitar</b>) + klik kalau nyala. Count-in ngikutin setelan metronome.</p>
+
+        <div class="takes-head">Take</div>
+        <p class="hint" id="takeEmpty">Belum ada rekaman di lagu ini.</p>
+        <div id="takeList" class="take-list"></div>
+        <div id="takeAdjust" hidden>
+          <div class="row">
+            <span class="row-label">Geser rekaman</span>
+            <div class="stepper"><button id="takeMinus">−10ms</button><span id="takeOffset">0 ms</span><button id="takePlus">+10ms</button></div>
+          </div>
+          <div id="videoAdjust">
+            <div class="row">
+              <span class="row-label">Geser video</span>
+              <div class="stepper"><button id="videoMinus">−20ms</button><span id="videoOffsetLabel">0 ms</span><button id="videoPlus">+20ms</button></div>
+            </div>
+            <p class="hint">Cocokin gerakan jari di video sama suaranya (cek di file video hasil ekspor).
+              <button id="videoDefault" class="link-btn">Jadikan default HP ini</button></p>
+          </div>
+        </div>
+      </div>
+
       <div class="section-label">Metronome</div>
       <div class="panel">
         <div class="row">
@@ -218,7 +271,9 @@
   <dialog id="exportDlg">
     <form method="dialog">
       <h2>Ekspor</h2>
-      <div class="radio-list">
+      <div class="radio-list" id="exKindList">
+        <label data-k="cover"><input type="radio" name="exKind" value="cover"><span><b>🎸 Cover</b><small>Rekamanmu + backing tanpa gitar asli — buat di-share</small></span></label>
+        <label data-k="take"><input type="radio" name="exKind" value="take"><span><b>Rekaman saja</b><small>Cuma suara gitarmu</small></span></label>
         <label><input type="radio" name="exKind" value="click"><span><b>Klik saja</b><small>Metronome sepanjang lagu, ketukan 1 beraksen</small></span></label>
         <label><input type="radio" name="exKind" value="sq"><span><b>Sequencer saja</b><small>Track pilihan (default Piano/Keys + Lainnya)</small></span></label>
         <label><input type="radio" name="exKind" value="mix"><span><b>Sesuai mixer</b><small>Persis yang kedengeran sekarang, misal "minus gitar"</small></span></label>
@@ -228,9 +283,28 @@
         <div id="exStems" class="chips"></div>
       </div>
       <label class="switch" id="exClickField"><input type="checkbox" id="exClick"><span></span> Sertakan klik</label>
-      <label class="switch"><input type="checkbox" id="exCount"><span></span> Count-in 1 bar di awal file</label>
+      <label class="switch" id="exCountField"><input type="checkbox" id="exCount"><span></span> Count-in 1 bar di awal file</label>
+      <div id="coverOpts">
+        <div class="field">Potong (menit:detik)
+          <div class="trim">
+            <input id="exFrom" inputmode="decimal" autocomplete="off"><button type="button" id="exFromNow" class="ghost small">posisi sekarang</button>
+          </div>
+          <div class="trim">
+            <input id="exTo" inputmode="decimal" autocomplete="off"><button type="button" id="exToNow" class="ghost small">posisi sekarang</button>
+          </div>
+          <small>Reels maks ±3 menit. Default: sepanjang take.</small>
+        </div>
+        <label class="switch" id="coBalanceRow"><input type="checkbox" id="coBalance"><span></span> Seimbangkan volume gitar otomatis</label>
+        <label class="switch"><input type="checkbox" id="coComp"><span></span> Kompresor ringan (gitar lebih rata)</label>
+        <label class="switch"><input type="checkbox" id="coReverb"><span></span> Reverb ringan di gitar</label>
+        <label class="switch"><input type="checkbox" id="coFadeIn"><span></span> Fade in</label>
+        <label class="switch"><input type="checkbox" id="coFadeOut"><span></span> Fade out</label>
+        <div class="field" id="coOtherRow">Track "Lainnya" (sisa gitar asli kadang bocor di sini)
+          <div class="seg wide" id="coOtherSeg"><button type="button" data-v="1">100%</button><button type="button" data-v="0.5">50%</button><button type="button" data-v="0">Matikan</button></div>
+        </div>
+      </div>
       <div class="field">Format
-        <div class="seg wide" id="exFormat"><button type="button" data-v="wav">WAV (kualitas penuh)</button><button type="button" data-v="mp3">MP3 (lebih kecil)</button></div>
+        <div class="seg wide" id="exFormat"><button type="button" data-v="wav">WAV</button><button type="button" data-v="mp3">MP3</button><button type="button" data-v="mp4">🎥 Video</button></div>
         <small id="exSize"></small>
       </div>
       <p id="exStatus" class="status-line"></p>
@@ -241,6 +315,34 @@
       <div class="dlg-actions">
         <button value="cancel" class="ghost">Tutup</button>
         <button type="button" id="exGo" class="primary">Buat file</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="recOverlay" class="rec-overlay" hidden>
+    <video id="ovVideo" playsinline muted hidden></video>
+    <div class="ov-top">
+      <span class="ov-rec"><span class="rec-dot"></span> REC <span id="ovTime">0:00</span></span>
+      <span id="ovBar" class="ov-bar"></span>
+    </div>
+    <div class="ov-bottom">
+      <div class="meter"><div id="ovMeter"></div></div>
+      <p id="ovStatus" class="ov-status"></p>
+      <button id="ovStop" class="stop-btn"><span class="stop-sq"></span> Stop</button>
+      <p class="ov-hint">Jangan tutup/minimize aplikasi selama merekam.</p>
+    </div>
+  </div>
+
+  <dialog id="calDlg">
+    <form method="dialog">
+      <h2>Kalibrasi delay</h2>
+      <p class="hint">Ngukur jeda antara suara keluar dari HP dan suara masuk ke rekaman, supaya rekamanmu pas sama lagunya. Cukup sekali per setup.</p>
+      <div class="seg wide" id="calMethodSeg"><button type="button" data-v="loopback">Pocket Amp (LOOPBACK)</button><button type="button" data-v="tap">Ketuk senar</button></div>
+      <ol id="calSteps" class="steps"></ol>
+      <p id="calResult" class="status-line pre"></p>
+      <div class="dlg-actions">
+        <button value="cancel" class="ghost">Tutup</button>
+        <button type="button" id="calGo" class="primary">Mulai</button>
       </div>
     </form>
   </dialog>

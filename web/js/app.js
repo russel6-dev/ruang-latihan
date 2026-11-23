@@ -2,7 +2,9 @@ import { db } from './db.js';
 import { api, settings, loadSettings, saveSettings, repoName } from './api.js';
 import { Player, lowerBound } from './player.js';
 import { buildGrid, sectionIndexAt, sortedSections, mapFromLegacy } from './grid.js';
-import { renderMix, toWav, toMp3, estimateSize, KINDS } from './export.js';
+import { renderMix, renderCover, composeVideo, toWav, toMp3, estimateSize, KINDS } from './export.js';
+import { createRecUi } from './rec-ui.js';
+import { pickVideoMime } from './recorder.js';
 
 const $ = (id) => document.getElementById(id);
 const player = new Player();
@@ -14,6 +16,7 @@ const STEM_INFO = {
   guitar: { label: 'Gitar', color: '#34d399' },
   piano: { label: 'Piano/Keys', color: '#a78bfa' },
   other: { label: 'Lainnya', color: '#94a3b8' },
+  take: { label: 'Rekaman', color: '#ef4444' },
 };
 
 const PRESETS = {
@@ -548,12 +551,14 @@ async function openSong(id) {
   peaksCache = null;
   applyGrid(false);
   showView('player', song.title);
+  recUi.loadSong().catch((err) => toast(`Gagal memuat rekaman: ${err.message}`));
 }
 
 function renderTracks() {
   const box = $('tracks');
   box.innerHTML = '';
-  for (const name of current.stems) {
+  const names = [...current.stems, ...(recUi?.active ? ['take'] : [])];
+  for (const name of names) {
     const info = STEM_INFO[name] || { label: name, color: '#999' };
     const t = player.tracks[name];
     const row = document.createElement('div');
@@ -771,6 +776,21 @@ const exportState = { kind: 'click', format: 'wav', stems: ['piano', 'other'], w
 function openExport() {
   const prefs = current.exportPrefs || {};
   Object.assign(exportState, { stems: ['piano', 'other'], ...prefs, blob: null });
+  const take = recUi.active;
+  for (const k of ['cover', 'take']) document.querySelector(`#exKindList label[data-k=${k}]`).hidden = !take;
+  if (!take && (exportState.kind === 'cover' || exportState.kind === 'take')) exportState.kind = 'click';
+  if (exportState.format === 'mp4' && !take?.hasVideo) exportState.format = 'mp3';
+  if (take) {
+    exportState.from = Math.max(0, take.startAt);
+    exportState.to = Math.min(current.duration, take.startAt + take.duration);
+    $('exFrom').value = fmtMs(exportState.from);
+    $('exTo').value = fmtMs(exportState.to);
+  }
+  for (const [id, key, def] of [['coBalance', 'balance', true], ['coComp', 'comp', true], ['coReverb', 'reverb', false], ['coFadeIn', 'fadeIn', false], ['coFadeOut', 'fadeOut', true]]) {
+    if (exportState[key] === undefined) exportState[key] = def;
+    $(id).checked = exportState[key];
+  }
+  if (exportState.otherLevel === undefined) exportState.otherLevel = 1;
   for (const r of document.querySelectorAll('input[name=exKind]')) r.checked = r.value === exportState.kind;
   const box = $('exStems');
   box.innerHTML = '';
@@ -799,10 +819,20 @@ function openExport() {
 
 function updateExportUi() {
   const k = exportState.kind;
+  const coverish = k === 'cover' || k === 'take';
   $('exStemsField').hidden = !(k === 'sq' || k === 'lr');
   $('exClickField').hidden = k !== 'mix';
+  $('exCountField').hidden = coverish;
+  $('coverOpts').hidden = !coverish;
+  $('coOtherRow').hidden = k !== 'cover';
+  $('coBalanceRow').hidden = k !== 'cover';
+  for (const b of $('coOtherSeg').children) b.classList.toggle('on', Number(b.dataset.v) === exportState.otherLevel);
+  const mp4 = $('exFormat').querySelector('[data-v=mp4]');
+  mp4.hidden = !(k === 'cover' && recUi.active?.hasVideo);
+  if (mp4.hidden && exportState.format === 'mp4') exportState.format = 'mp3';
   for (const b of $('exFormat').children) b.classList.toggle('on', b.dataset.v === exportState.format);
-  const mb = estimateSize(k, exportState.format, current.duration);
+  const len = coverish ? Math.max(1, (exportState.to ?? current.duration) - (exportState.from ?? 0)) : current.duration;
+  const mb = exportState.format === 'mp4' ? len * 1.05 : estimateSize(k === 'take' ? 'sq' : k, exportState.format, len);
   $('exSize').textContent = `Perkiraan ukuran file: ±${mb < 10 ? mb.toFixed(1) : Math.round(mb)} MB`;
   $('exGo').disabled = (k === 'sq' || k === 'lr') && !exportState.stems.length;
 }
@@ -822,12 +852,74 @@ function exportGains() {
   return gains;
 }
 
+function parseTime(v, fallback) {
+  const m = String(v).trim().match(/^(\d+):(\d{1,2}(?:[.,]\d+)?)$|^(\d+(?:[.,]\d+)?)$/);
+  if (!m) return fallback;
+  if (m[3] !== undefined) return Number(m[3].replace(',', '.'));
+  return Number(m[1]) * 60 + Number(m[2].replace(',', '.'));
+}
+
+function takeGainForMix() {
+  const t = player.tracks.take || { vol: 1 };
+  const anySolo = Object.values(player.tracks).some((x) => x.solo);
+  return t.mute || (anySolo && !t.solo) ? 0 : t.vol;
+}
+
+async function runCoverExport(name, status) {
+  const k = exportState.kind;
+  const take = recUi.active;
+  const from = Math.max(0, Math.min(exportState.from, current.duration - 1));
+  const to = Math.max(from + 1, Math.min(exportState.to, current.duration));
+  const fmtKind = exportState.format;
+  const share = fmtKind === 'mp4' ? 40 : fmtKind === 'mp3' ? 50 : 95;
+  const { buffer, balance } = await renderCover({
+    buffers: k === 'cover' ? player.buffers : {},
+    guitarName: 'guitar',
+    take: { buffer: recUi.activeBuffer, startAt: recUi.effStart(take), gain: player.tracks.take?.vol ?? 1 },
+    from, to,
+    otherLevel: exportState.otherLevel,
+    autoBalance: k === 'cover' && exportState.balance,
+    compressor: exportState.comp,
+    reverb: exportState.reverb,
+    fadeIn: exportState.fadeIn,
+    fadeOut: exportState.fadeOut,
+    onProgress: (p) => status(`Lagi bikin file "${name}"… ${Math.round(p * share)}%`),
+  });
+  if (k === 'cover' && exportState.balance) console.info('cover balance', balance);
+  if (fmtKind === 'wav') return toWav(buffer);
+  if (fmtKind === 'mp3') return toMp3(buffer, (p) => status(`Lagi bikin file "${name}"… ${50 + Math.round(p * 49)}%`));
+  // MP4: video kamera + audio cover
+  const videoBlob = await db.getBlob(`video:${take.id}`);
+  if (!videoBlob) throw new Error('Video take ini nggak ketemu');
+  const mime = pickVideoMime();
+  if (!mime) throw new Error('HP ini nggak bisa bikin video dari browser');
+  const size = take.quality === '720' ? { w: 720, h: 1280 } : { w: 1080, h: 1920 };
+  status(`Lagi bikin video "${name}"… 40% — layar harus tetap nyala`);
+  const blob = await composeVideo({
+    videoBlob, videoStartAt: recUi.effVideoStart(take), from, to, audio: buffer, mime, size,
+    onProgress: (p) => status(`Lagi bikin video "${name}"… ${40 + Math.round(p * 59)}% — layar harus tetap nyala`),
+  });
+  exportState.note = mime.startsWith('video/mp4')
+    ? (mime.includes('mp4a') ? '' : ' (audio Opus — kalau IG/TikTok nolak, kabarin ya)')
+    : ' (format WebM — IG/TikTok mungkin nolak, HP ini nggak bisa bikin MP4)';
+  return blob;
+}
+
 async function runExport() {
   const k = exportState.kind;
-  current.exportPrefs = { kind: k, format: exportState.format, stems: [...exportState.stems], withClick: exportState.withClick, countIn: exportState.countIn };
+  current.exportPrefs = {
+    kind: k, format: exportState.format, stems: [...exportState.stems], withClick: exportState.withClick, countIn: exportState.countIn,
+    balance: exportState.balance, comp: exportState.comp, reverb: exportState.reverb, fadeIn: exportState.fadeIn, fadeOut: exportState.fadeOut, otherLevel: exportState.otherLevel,
+  };
+  exportState.from = parseTime($('exFrom').value, exportState.from);
+  exportState.to = parseTime($('exTo').value, exportState.to);
+  exportState.note = '';
   saveSong();
   const safeTitle = current.title.replace(/[\\/:*?"<>|]+/g, '').trim() || 'Lagu';
-  const name = `${safeTitle} - ${KINDS[k]}.${exportState.format}`;
+  const take = recUi.active;
+  const suffix = (k === 'cover' || k === 'take') && take ? ` (${take.name})` : '';
+  const ext = exportState.format === 'mp4' ? (pickVideoMime().startsWith('video/mp4') ? 'mp4' : 'webm') : exportState.format;
+  const name = `${safeTitle} - ${KINDS[k]}${suffix}.${ext}`;
   const key = 'export';
   $('exGo').disabled = true;
   $('exDone').hidden = true;
@@ -836,6 +928,10 @@ async function runExport() {
     player.pause();
     keepAwake(true);
     status(`Lagi bikin file "${name}"… 0%`);
+    let blob;
+    if (k === 'cover' || k === 'take') {
+      blob = await runCoverExport(name, status);
+    } else {
     const buf = await renderMix({
       buffers: player.buffers,
       gains: exportGains(),
@@ -845,18 +941,19 @@ async function runExport() {
       countIn: exportState.countIn,
       clickVol: current.metro.vol,
       duration: player.duration,
+      extra: recUi.activeBuffer ? { buffer: recUi.activeBuffer, startAt: recUi.effStart(recUi.active), gain: k === 'mix' ? takeGainForMix() : 0 } : null,
       onProgress: (p) => status(`Lagi bikin file "${name}"… ${Math.round(p * (exportState.format === 'mp3' ? 50 : 95))}%`),
     });
-    let blob;
     if (exportState.format === 'mp3') {
       blob = await toMp3(buf, (p) => status(`Lagi bikin file "${name}"… ${50 + Math.round(p * 49)}%`));
     } else {
       blob = toWav(buf);
     }
+    }
     exportState.blob = blob;
     exportState.name = name;
     saveBlob(blob, name);
-    $('exStatus').textContent = `✅ "${name}" (${(blob.size / 1048576).toFixed(1)} MB) tersimpan di folder Download.`;
+    $('exStatus').textContent = `✅ "${name}" (${(blob.size / 1048576).toFixed(1)} MB) tersimpan di folder Download.${exportState.note || ''}`;
     $('exDone').hidden = false;
     busyEnd(key, true, '✅ File tersimpan di folder Download', 'Aplikasi boleh ditutup.');
   } catch (err) {
@@ -905,6 +1002,7 @@ function closePlayer() {
   player.pause();
   keepAwake(false);
   saveSong();
+  recUi.unload();
   current = null;
   player.unload();
   showView('library');
@@ -1053,6 +1151,14 @@ function bind() {
   $('exClick').onchange = (e) => { exportState.withClick = e.target.checked; };
   $('exCount').onchange = (e) => { exportState.countIn = e.target.checked; };
   $('exGo').onclick = runExport;
+  for (const [id, key] of [['coBalance', 'balance'], ['coComp', 'comp'], ['coReverb', 'reverb'], ['coFadeIn', 'fadeIn'], ['coFadeOut', 'fadeOut']]) {
+    $(id).onchange = (e) => { exportState[key] = e.target.checked; };
+  }
+  seg('coOtherSeg', (v) => { exportState.otherLevel = Number(v); updateExportUi(); });
+  $('exFromNow').onclick = () => { $('exFrom').value = fmtMs(player.position); };
+  $('exToNow').onclick = () => { $('exTo').value = fmtMs(player.position); };
+  $('exFrom').onchange = () => { exportState.from = parseTime($('exFrom').value, exportState.from); updateExportUi(); };
+  $('exTo').onchange = () => { exportState.to = parseTime($('exTo').value, exportState.to); updateExportUi(); };
   $('exSave').onclick = () => exportState.blob && saveBlob(exportState.blob, exportState.name);
   $('exShare').onclick = shareBlob;
 
@@ -1085,6 +1191,12 @@ function bind() {
 
 // ---------- mulai ----------
 loadSettings();
+const recUi = createRecUi({
+  player, settings, saveSettings, toast, busySet, busyEnd, keepAwake, fmt,
+  getCurrent: () => current, renderTracks: () => current && renderTracks(), saveSong, togglePlay,
+});
+recUi.recover().catch(() => {});
+if (new URLSearchParams(location.search).has('debug')) window.__rl = { player, recUi };
 bind();
 resumeJobs();
 requestAnimationFrame(frame);

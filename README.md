@@ -9,7 +9,11 @@ Aplikasi latihan band buat HP (PWA):
 - **Mode klik**: *Tempo tetap* (rata per bagian — cocok lagu studio) atau *Ikuti drummer*
 - **Editor peta tempo**: BPM per bagian, ×2/÷2, birama, geser ketukan "1", bar ganjil, bagian baru, tap tempo
 - **Ekspor** (di HP, offline): klik saja, sequencer saja, sesuai mixer, atau **klik kiri + SQ kanan** — WAV atau MP3, opsional count-in
-- Peringatan "jangan tutup aplikasi" selama upload / unduh / ekspor
+- Peringatan "jangan tutup aplikasi" selama upload / unduh / ekspor / rekam
+- **Mode rekaman**: rekam gitar lewat USB audio interface (mis. M-VAVE Pocket Amp) atau mic HP, bareng backing & klik;
+  kalibrasi delay (LOOPBACK atau ketuk senar), cek LOOPBACK otomatis, banyak take, geser ±ms, pemulihan rekaman yang kepotong
+- **Video**: rekam kamera depan/belakang sekaligus; ekspor **Cover** (rekaman + backing tanpa gitar asli) sebagai WAV/MP3
+  atau video vertikal 1080×1920 (MP4 kalau HP mendukung), dengan auto-seimbang volume, kompresor, reverb, fade, potong
 - Hasil disimpan di HP, jadi latihan bisa **offline**
 
 ## Cara kerja (gratis, pakai GitHub)
