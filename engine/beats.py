@@ -251,6 +251,57 @@ def _fix_boundaries(secs: list[dict]) -> list[dict]:
     return secs
 
 
+def _extend_edges(secs: list[dict], env: np.ndarray, env_times: np.ndarray, duration: float) -> list[dict]:
+    """Perpanjang tiap bagian ke belakang/depan selama pukulan drum masih pas di grid-nya."""
+    noise = np.median(env) + 1e-9
+
+    def hit(t: float, P: float) -> float | None:
+        lo, hi = np.searchsorted(env_times, [t - 0.06 * P, t + 0.06 * P])
+        if hi - lo < 1:
+            return None
+        j = int(np.argmax(env[lo:hi]))
+        return float(env_times[lo + j]) if env[lo + j] > 4 * noise else None
+
+    for i, f in enumerate(secs):
+        P = f["p"]
+        floor = secs[i - 1]["last"] + 0.5 * secs[i - 1]["p"] if i > 0 else 0.0
+        ceil = secs[i + 1]["first"] - 0.5 * P if i + 1 < len(secs) else duration
+        for direction in (-1, 1):
+            edge = f["first"] if direction < 0 else f["last"]
+            misses, k = 0, 1
+            while misses < 2:
+                t = edge + direction * k * P
+                if t <= floor or t >= ceil:
+                    break
+                h = hit(t, P)
+                if h is None:
+                    misses += 1
+                else:
+                    misses = 0
+                    if direction < 0:
+                        f["first"] = h
+                    else:
+                        f["last"] = h
+                k += 1
+    return secs
+
+
+def _merge_same(secs: list[dict]) -> list[dict]:
+    out: list[dict] = []
+    for f in secs:
+        if out:
+            g = out[-1]
+            same_tempo = abs(f["p"] - g["p"]) / g["p"] < 0.02
+            pred = (f["first"] - g["a"]) / g["p"]
+            if same_tempo and abs(pred - round(pred)) < 0.15:
+                n = g["n"] + f["n"]
+                out[-1] = {**g, "last": f["last"], "n": n, "err": max(g["err"], f["err"]),
+                           "times": np.concatenate([g["times"], f["times"]])}
+                continue
+        out.append(f)
+    return out
+
+
 # ---------------------------------------------------------------- tahap 4: birama & ketukan "1"
 
 def _downbeat_evidence(y: np.ndarray, beats: np.ndarray, chroma: np.ndarray, low: np.ndarray) -> np.ndarray:
@@ -289,7 +340,7 @@ def _meter(s: np.ndarray) -> int:
     return 3 if score3 > score4 + 0.15 and score3 > 0 else 4
 
 
-def _bars(s: np.ndarray, bpb: int, penalty: float = 3.0) -> list[int]:
+def _bars(s: np.ndarray, bpb: int, penalty: float = 5.0) -> list[int]:
     """Pilih posisi ketukan "1" (indeks) — bar normal panjangnya bpb, bar ganjil kena penalti."""
     n = len(s)
     if n == 0:
@@ -352,7 +403,14 @@ def analyze(mix_path: str, drums_path: str | None = None) -> dict:
         env_fine = librosa.onset.onset_strength(y=src, sr=SR, hop_length=FINE_HOP, n_fft=1024)
         fine_t = librosa.frames_to_time(np.arange(len(env_fine)), sr=SR, hop_length=FINE_HOP) - FINE_HOP / SR
         secs = [_snap_fit(_fix_octave(f, env_lo), env_fine, fine_t) for f in secs]
+        # Setelah oktaf dibetulkan, bagian yang ternyata sama bisa digabung lagi.
+        secs = _merge_same(secs)
+        secs = [_snap_fit(f, env_fine, fine_t) for f in secs]
+        # Buang bagian sampah: kependekan atau berantakan (sisa dengung, fill, salah deteksi).
+        good = [f for f in secs if f["n"] >= 8 and not (f["err"] > 0.03 and f["n"] < 16)]
+        secs = good or secs
         secs = _fix_boundaries(secs)
+        secs = _extend_edges(secs, env_fine, fine_t, duration)
         for i, f in enumerate(secs):
             f["gap"] = bool(i > 0 and f["first"] - secs[i - 1]["last"] > 1.6 * secs[i - 1]["p"])
     if not secs:
