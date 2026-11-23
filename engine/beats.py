@@ -438,7 +438,10 @@ def analyze(mix_path: str, drums_path: str | None = None) -> dict:
             continue
         s = _downbeat_evidence(y, grid, chroma, low)
         bpb = _meter(s)
-        downs = _bars(s, bpb)
+        # Ketukan di area sunyi di awal/akhir bagian jangan ikut menentukan ketukan "1".
+        loud = np.where(s > -3.9)[0]
+        lo_i, hi_i = (int(loud[0]), int(loud[-1])) if len(loud) else (0, len(s) - 1)
+        downs = [d + lo_i for d in _bars(s[lo_i:hi_i + 1], bpb)]
         # Bar pertama yang kependekan = pickup (bukan bar ganjil): mulai dari ketukan "1" berikutnya.
         if len(downs) > 2 and downs[1] - downs[0] < bpb and i > 0:
             downs = downs[1:]
