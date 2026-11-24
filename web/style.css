@@ -339,3 +339,13 @@ dialog { max-height: 90dvh; overflow-y: auto; }
 .pan-row input { flex: 1; height: 22px; }
 .pan-val { min-width: 54px; text-align: right; color: var(--text); font-weight: 600; }
 #exVideoField .switch { margin-top: 8px; }
+
+/* ---------- notifikasi update ---------- */
+.update-bar {
+  margin-top: 10px; padding: 8px 8px 8px 14px; border-radius: 12px;
+  background: #0b2540; border: 1px solid #2563eb; color: #bfdbfe;
+  display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 600;
+}
+.update-bar span { flex: 1; }
+.update-bar button { padding: 8px 14px; border-radius: 10px; }
+.update-bar .primary { background: #3b82f6; color: #fff; }

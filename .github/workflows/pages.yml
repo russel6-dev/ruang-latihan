@@ -27,6 +27,8 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install pillow && python tools/make_icons.py
+      - name: Cap versi (dipakai notifikasi update di aplikasi)
+        run: sed -i "s/^const VERSION = '[^']*';/const VERSION = 'rl-${GITHUB_SHA::7}';/" web/sw.js && grep "^const VERSION" web/sw.js
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

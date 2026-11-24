@@ -1077,6 +1077,86 @@ async function shareBlob() {
   }
 }
 
+// ---------- update aplikasi ----------
+let swReg = null;
+let appVersion = '';
+let wantReload = false;
+
+async function setupUpdates() {
+  if (!('serviceWorker' in navigator)) return;
+  try { swReg = await navigator.serviceWorker.register('sw.js'); } catch { return; }
+  const watch = (w) => {
+    if (!w) return;
+    const ready = () => { if (w.state === 'installed' && navigator.serviceWorker.controller) showUpdate(); };
+    ready();
+    w.addEventListener('statechange', ready);
+  };
+  if (swReg.waiting && navigator.serviceWorker.controller) showUpdate();
+  watch(swReg.installing);
+  swReg.addEventListener('updatefound', () => watch(swReg.installing));
+  navigator.serviceWorker.addEventListener('controllerchange', () => { if (wantReload) location.reload(); });
+  navigator.serviceWorker.addEventListener('message', (e) => {
+    if (e.data?.type === 'VERSION') { appVersion = e.data.version; $('appVersion').textContent = `Versi aplikasi: ${appVersion.replace(/^rl-/, '')}`; }
+  });
+  navigator.serviceWorker.controller?.postMessage({ type: 'VERSION' });
+  // Cek versi baru: tiap balik dari background (maks 1x/menit) & tiap 30 menit.
+  let last = Date.now();
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && Date.now() - last > 60_000) { last = Date.now(); checkUpdate(); }
+  });
+  setInterval(checkUpdate, 30 * 60_000);
+}
+
+async function checkUpdate(manual = false) {
+  if (!swReg) { if (manual) toast('Update otomatis nggak didukung di browser ini'); return; }
+  try {
+    await swReg.update();
+  } catch {
+    if (manual) toast('Nggak bisa ngecek update (cek internet)');
+    return;
+  }
+  if (manual) {
+    setTimeout(() => {
+      if (swReg.waiting || swReg.installing) showUpdate();
+      else toast('Udah versi terbaru 👍');
+    }, 2500);
+  }
+}
+
+function showUpdate() {
+  $('updateBar').hidden = false;
+}
+
+async function doUpdate() {
+  if (busy.size || recUi.isRecording()) {
+    toast('Tunggu proses yang lagi jalan selesai dulu, baru update.', 4000);
+    return;
+  }
+  // simpan setelan lagu yang lagi dibuka, lalu buka lagi setelah update
+  if (current) {
+    clearTimeout(saveTimer);
+    const { grid, legacy, ...song } = current;
+    try { await db.putSong(song); } catch { /* abaikan */ }
+    try { sessionStorage.setItem('rl-reopen', current.id); } catch { /* abaikan */ }
+  }
+  player.pause();
+  wantReload = true;
+  $('updateBtn').disabled = true;
+  $('updateBtn').textContent = 'Mengupdate…';
+  const w = swReg?.waiting;
+  if (w) w.postMessage({ type: 'SKIP_WAITING' });
+  else location.reload();
+  setTimeout(() => location.reload(), 5000); // cadangan kalau sinyal dari service worker telat
+}
+
+async function reopenAfterUpdate() {
+  let id = null;
+  try { id = sessionStorage.getItem('rl-reopen'); sessionStorage.removeItem('rl-reopen'); } catch { /* abaikan */ }
+  if (!id) return;
+  await openSong(id);
+  toast('✅ Aplikasi udah versi terbaru', 3500);
+}
+
 // ---------- navigasi ----------
 function showView(view, title) {
   const isPlayer = view === 'player';
@@ -1255,6 +1335,9 @@ function bind() {
 
   // --- pengaturan
   $('settingsBtn').onclick = openSettings;
+  $('updateBtn').onclick = doUpdate;
+  $('updateLater').onclick = () => { $('updateBar').hidden = true; };
+  $('checkUpdateBtn').onclick = () => checkUpdate(true);
   $('checkBtn').onclick = () => {
     settings.token = $('setToken').value.trim();
     settings.repo = cleanRepo($('setRepo').value);
@@ -1292,4 +1375,5 @@ if (new URLSearchParams(location.search).has('debug')) window.__rl = { player, r
 bind();
 resumeJobs();
 requestAnimationFrame(frame);
-if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+setupUpdates();
+reopenAfterUpdate();
