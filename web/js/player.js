@@ -33,6 +33,7 @@ export class Player {
     this.rate = 0;
     this.buffers = {};
     this.gains = {};
+    this.extras = new Map();
     this.sources = [];
     this.clicks = new Set();
     this.visual = [];
@@ -70,9 +71,10 @@ export class Player {
     this.stopNodes();
     this.playing = false;
     for (const g of Object.values(this.gains)) g.disconnect();
+    for (const e of this.extras.values()) e.pan.disconnect();
     this.buffers = {};
     this.gains = {};
-    this.extra = null;
+    this.extras = new Map();
     this.duration = 0;
     this.pos = 0;
   }
@@ -119,18 +121,35 @@ export class Player {
     return out;
   }
 
-  // Track tambahan (rekaman): mulai di posisi lagu startAt (detik), boleh di tengah lagu.
-  setExtra(buffer, startAt = 0) {
-    if (!this.gains.take) {
-      const g = this.ctx.createGain();
-      g.connect(this.master);
-      this.gains.take = g;
-    }
+  // Track rekaman (take): list [{id, buffer, startAt, pan}]. Tiap take boleh mulai di tengah lagu.
+  setExtras(list) {
     const was = this.playing;
     if (was) this.pause();
-    this.extra = buffer ? { buffer, startAt } : null;
+    const keep = new Set(list.map((x) => x.id));
+    for (const [id, e] of this.extras) {
+      if (!keep.has(id)) { e.gain.disconnect(); e.pan.disconnect(); this.extras.delete(id); delete this.gains[`take:${id}`]; }
+    }
+    for (const x of list) {
+      let e = this.extras.get(x.id);
+      if (!e) {
+        const gain = this.ctx.createGain();
+        const pan = this.ctx.createStereoPanner();
+        gain.connect(pan).connect(this.master);
+        e = { gain, pan };
+        this.extras.set(x.id, e);
+        this.gains[`take:${x.id}`] = gain;
+      }
+      e.buffer = x.buffer;
+      e.startAt = x.startAt;
+      e.pan.pan.value = x.pan || 0;
+    }
     this.applyGains(true);
     if (was) this.play(false);
+  }
+
+  setPan(id, v) {
+    const e = this.extras.get(id);
+    if (e) e.pan.pan.setTargetAtTime(v, this.ctx.currentTime, 0.02);
   }
 
   setTrack(name, patch) {
@@ -144,7 +163,7 @@ export class Player {
     for (const [name, g] of Object.entries(this.gains)) {
       const t = this.tracks[name] || { vol: 1 };
       let v = t.mute || (anySolo && !t.solo) ? 0 : t.vol;
-      if (name === 'take' && !this.extra) v = 0;
+
       if (instant) g.gain.value = v;
       else g.gain.setTargetAtTime(v, this.ctx.currentTime, 0.015);
     }
@@ -216,15 +235,15 @@ export class Player {
       src.start(startCtx, p);
       this.sources.push(src);
     }
-    if (this.extra && this.gains.take) {
-      const q = p - this.extra.startAt;
-      if (q < this.extra.buffer.duration) {
-        const src = this.ctx.createBufferSource();
-        src.buffer = this.extra.buffer;
-        src.connect(this.gains.take);
-        if (q >= 0) src.start(startCtx, q); else src.start(startCtx - q, 0);
-        this.sources.push(src);
-      }
+    for (const e of this.extras.values()) {
+      if (!e.buffer) continue;
+      const q = p - e.startAt;
+      if (q >= e.buffer.duration) continue;
+      const src = this.ctx.createBufferSource();
+      src.buffer = e.buffer;
+      src.connect(e.gain);
+      if (q >= 0) src.start(startCtx, q); else src.start(startCtx - q, 0);
+      this.sources.push(src);
     }
     this.nextBeat = idx;
     this.playing = true;

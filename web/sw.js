@@ -1,5 +1,5 @@
 // Service worker: bikin aplikasi tetap bisa dibuka tanpa internet (di studio, dsb).
-const VERSION = 'rl-v4';
+const VERSION = 'rl-v5';
 const SHELL = [
   './', 'index.html', 'style.css', 'manifest.webmanifest',
   'js/app.js', 'js/api.js', 'js/db.js', 'js/player.js', 'js/grid.js', 'js/export.js', 'js/mp3worker.js', 'js/recorder.js', 'js/rec-ui.js', 'js/capture-worklet.js',

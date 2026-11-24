@@ -8,13 +8,13 @@ export function createRecUi(app) {
   const { player, settings, saveSettings, toast, busySet, busyEnd, keepAwake, fmt } = app;
   const recorder = new Recorder(player);
   let takes = [];
-  let active = null;      // take yang dipakai di mixer
-  let activeBuffer = null;
+  let selected = null;     // take yang lagi diatur (geser rekaman/video)
+  let buffers = new Map(); // id -> AudioBuffer (hanya take yang nyala)
   let rec = null;          // state saat merekam
   let clipUntil = 0;
 
   settings.latency = settings.latency || {};
-  settings.rec = { setup: 'usb', video: 'none', quality: '1080', ...(settings.rec || {}) };
+  settings.rec = { setup: 'usb', video: 'none', quality: '1080', role: 'guitar', ...(settings.rec || {}) };
   if (settings.videoLag === undefined) settings.videoLag = 0;
 
   const song = () => app.getCurrent();
@@ -57,6 +57,7 @@ export function createRecUi(app) {
     for (const b of $('recSetupSeg').children) b.classList.toggle('on', b.dataset.v === settings.rec.setup);
     for (const b of $('recVideoSeg').children) b.classList.toggle('on', b.dataset.v === settings.rec.video);
     for (const b of $('recQualitySeg').children) b.classList.toggle('on', b.dataset.v === settings.rec.quality);
+    for (const b of $('recRoleSeg').children) b.classList.toggle('on', b.dataset.v === settings.rec.role);
     $('recQualityRow').hidden = settings.rec.video === 'none';
     const L = latencyFor();
     $('recLatency').textContent = L === undefined ? 'belum dikalibrasi' : `${Math.round(L * 1000)} ms`;
@@ -65,71 +66,126 @@ export function createRecUi(app) {
       : 'HP ditaruh ±30–50 cm dari speaker ampli. <b>Pakai earphone kabel tanpa mic</b> supaya lagu nggak ikut kerekam.';
   }
 
-  // ---------------- daftar take
+  // ---------------- daftar take (multitrack)
   async function loadSong() {
     takes = await db.listTakes(song().id);
-    const want = song().activeTake;
-    active = takes.find((t) => t.id === want) || takes[takes.length - 1] || null;
-    await applyActive(false);
+    // migrasi take versi lama (sebelum multitrack)
+    for (const t of takes) {
+      if (t.on !== undefined) continue;
+      t.on = song().activeTake ? t.id === song().activeTake : t === takes[takes.length - 1];
+      Object.assign(t, { role: 'guitar', vol: song().tracks?.take?.vol ?? 1, mute: false, solo: false, pan: 0 });
+      await db.putTake(t);
+    }
+    selected = takes.find((t) => t.id === song().selectedTake) || takes[takes.length - 1] || null;
+    buffers = new Map();
+    await syncPlayer();
     renderSetup();
     renderTakes();
   }
 
-  async function applyActive(save = true) {
-    activeBuffer = null;
-    if (active) {
-      const blob = await db.getBlob(`take:${active.id}`);
-      if (blob) activeBuffer = await player.ctx.decodeAudioData(await blob.arrayBuffer());
-    }
-    player.setExtra(activeBuffer, active ? effStart(active) : 0);
-    if (!player.tracks.take) player.setTrack('take', { vol: 1, mute: false, solo: false, ...(song().tracks.take || {}) });
-    song().activeTake = active?.id || null;
-    app.renderTracks();
-    if (save) app.saveSong();
-  }
-
   const effStart = (t) => t.startAt + (t.offset || 0) / 1000;
   const effVideoStart = (t) => t.videoStartAt + (t.videoOffset || 0) / 1000;
+  const onTakes = () => takes.filter((t) => t.on);
+
+  async function syncPlayer() {
+    const on = onTakes();
+    for (const id of [...buffers.keys()]) if (!on.some((t) => t.id === id)) buffers.delete(id); // lepas memori
+    for (const t of on) {
+      if (buffers.has(t.id)) continue;
+      const blob = await db.getBlob(`take:${t.id}`);
+      if (blob) buffers.set(t.id, await player.ctx.decodeAudioData(await blob.arrayBuffer()));
+    }
+    const live = on.filter((t) => buffers.has(t.id));
+    player.setExtras(live.map((t) => ({ id: t.id, buffer: buffers.get(t.id), startAt: effStart(t), pan: t.pan || 0 })));
+    for (const k of Object.keys(player.tracks)) if (k.startsWith('take:') && !live.some((t) => `take:${t.id}` === k)) delete player.tracks[k];
+    for (const t of live) player.setTrack(`take:${t.id}`, { vol: t.vol ?? 1, mute: !!t.mute, solo: !!t.solo });
+    app.renderTracks();
+  }
+
+  // Dipanggil mixer: ubah volume/mute/solo/pan take (disimpan per take).
+  async function updateTakeMix(id, patch) {
+    const t = takes.find((x) => x.id === id);
+    if (!t) return;
+    Object.assign(t, patch);
+    if ('pan' in patch) player.setPan(id, t.pan);
+    else player.setTrack(`take:${id}`, { vol: t.vol ?? 1, mute: !!t.mute, solo: !!t.solo });
+    clearTimeout(t._save);
+    t._save = setTimeout(() => { const { _save, ...rest } = t; db.putTake(rest); }, 300);
+  }
+
+  async function setOn(t, on) {
+    t.on = on;
+    await db.putTake(stripTake(t));
+    await syncPlayer();
+    renderTakes();
+  }
+
+  const stripTake = (t) => { const { _save, ...rest } = t; return rest; };
+
+  // Nyalakan semua take favorit (atau semua take kalau belum ada favorit), matikan track asli yang digantikan.
+  async function useAllTakes() {
+    if (!takes.length) { toast('Belum ada take di lagu ini'); return; }
+    const favs = takes.filter((t) => t.fav);
+    const pick = favs.length ? favs : takes;
+    for (const t of takes) { t.on = pick.includes(t); t.mute = false; t.solo = false; await db.putTake(stripTake(t)); }
+    await syncPlayer();
+    app.muteStems([...new Set(pick.map((t) => t.role).filter((r) => r && r !== 'extra'))]);
+    renderTakes();
+    toast(`${pick.length} take dinyalain${favs.length ? ' (yang ⭐)' : ''}, track asli yang digantiin dimatiin.`);
+  }
 
   function renderTakes() {
     const box = $('takeList');
     box.innerHTML = '';
     $('takeEmpty').hidden = takes.length > 0;
+    $('takesAll').hidden = takes.length === 0;
     for (const t of takes) {
       const el = document.createElement('div');
-      el.className = 'take' + (active?.id === t.id ? ' on' : '');
+      el.className = 'take' + (t.on ? ' live' : '') + (selected?.id === t.id ? ' sel' : '');
       el.innerHTML = `
+        <label class="take-on" title="Nyalakan di mixer"><input type="checkbox" ${t.on ? 'checked' : ''}><span></span></label>
         <button class="take-main">
           <span class="take-name">${t.fav ? '⭐ ' : ''}${escapeHtml(t.name)}${t.hasVideo ? ' 🎥' : ''}</span>
-          <span class="take-meta">mulai ${fmt(Math.max(0, t.startAt))} · ${fmt(t.duration)}${active?.id === t.id ? ' · dipakai di mixer' : ''}</span>
+          <span class="take-meta">${ROLE_LABEL[t.role] || 'Gitar'} · mulai ${fmt(Math.max(0, t.startAt))} · ${fmt(t.duration)}</span>
         </button>
-        <button class="icon-btn small" data-a="play" aria-label="Putar dari awal take">▶</button>
-        <button class="icon-btn small" data-a="fav" aria-label="Favorit">${t.fav ? '★' : '☆'}</button>
-        <button class="icon-btn small" data-a="ren" aria-label="Ganti nama">✎</button>
-        <button class="icon-btn small" data-a="del" aria-label="Hapus">🗑</button>`;
-      el.querySelector('.take-main').onclick = async () => { active = t; await applyActive(); renderTakes(); };
+        <div class="take-tools">
+          <select class="take-role" aria-label="Alat / menggantikan track">
+            ${Object.entries(ROLE_LABEL).map(([v, l]) => `<option value="${v}" ${t.role === v ? 'selected' : ''}>${l}</option>`).join('')}
+          </select>
+          <button class="icon-btn small" data-a="play" aria-label="Putar dari awal take">▶</button>
+          <button class="icon-btn small" data-a="fav" aria-label="Favorit">${t.fav ? '★' : '☆'}</button>
+          <button class="icon-btn small" data-a="ren" aria-label="Ganti nama">✎</button>
+          <button class="icon-btn small" data-a="del" aria-label="Hapus">🗑</button>
+        </div>`;
+      el.querySelector('.take-on input').onchange = (e) => setOn(t, e.target.checked);
+      el.querySelector('.take-main').onclick = () => { selected = t; song().selectedTake = t.id; app.saveSong(); renderTakes(); };
+      el.querySelector('.take-role').onchange = async (e) => { t.role = e.target.value; await db.putTake(stripTake(t)); renderTakes(); app.renderTracks(); };
       el.querySelector('[data-a=play]').onclick = async () => {
-        if (active?.id !== t.id) { active = t; await applyActive(); renderTakes(); }
+        if (!t.on) await setOn(t, true);
+        selected = t;
+        renderTakes();
         player.seek(Math.max(0, t.startAt - 1));
         if (!player.playing) app.togglePlay();
       };
-      el.querySelector('[data-a=fav]').onclick = async () => { t.fav = !t.fav; await db.putTake(t); renderTakes(); };
+      el.querySelector('[data-a=fav]').onclick = async () => { t.fav = !t.fav; await db.putTake(stripTake(t)); renderTakes(); };
       el.querySelector('[data-a=ren]').onclick = async () => {
         const name = prompt('Nama take:', t.name);
-        if (name && name.trim()) { t.name = name.trim().slice(0, 60); await db.putTake(t); renderTakes(); }
+        if (name && name.trim()) { t.name = name.trim().slice(0, 60); await db.putTake(stripTake(t)); renderTakes(); app.renderTracks(); }
       };
       el.querySelector('[data-a=del]').onclick = async () => {
         if (!confirm(`Hapus "${t.name}"? Nggak bisa dibalikin.`)) return;
         await db.deleteTake(t);
         takes = takes.filter((x) => x.id !== t.id);
-        if (active?.id === t.id) { active = takes[takes.length - 1] || null; await applyActive(); }
+        if (selected?.id === t.id) selected = takes[takes.length - 1] || null;
+        await syncPlayer();
         renderTakes();
       };
       box.appendChild(el);
     }
-    const a = active;
+    const a = selected;
     $('takeAdjust').hidden = !a;
     if (a) {
+      $('takeAdjustName').textContent = a.name;
       $('takeOffset').textContent = `${a.offset || 0} ms`;
       $('videoAdjust').hidden = !a.hasVideo;
       $('videoOffsetLabel').textContent = `${a.videoOffset || 0} ms`;
@@ -137,17 +193,17 @@ export function createRecUi(app) {
   }
 
   async function nudgeTake(ms) {
-    if (!active) return;
-    active.offset = (active.offset || 0) + ms;
-    await db.putTake(active);
-    player.setExtra(activeBuffer, effStart(active));
+    if (!selected) return;
+    selected.offset = (selected.offset || 0) + ms;
+    await db.putTake(stripTake(selected));
+    if (selected.on) await syncPlayer();
     renderTakes();
   }
 
   async function nudgeVideo(ms) {
-    if (!active) return;
-    active.videoOffset = (active.videoOffset || 0) + ms;
-    await db.putTake(active);
+    if (!selected) return;
+    selected.videoOffset = (selected.videoOffset || 0) + ms;
+    await db.putTake(stripTake(selected));
     renderTakes();
   }
 
@@ -235,7 +291,7 @@ export function createRecUi(app) {
     const id = `t${Date.now().toString(36)}`;
     const sr = player.ctx.sampleRate;
     const number = takes.length + 1;
-    rec = { id, L, sr, number, videoChunks: 0, video: settings.rec.video, quality: settings.rec.quality, startedAt: Date.now() };
+    rec = { id, L, sr, number, role: settings.rec.role, videoChunks: 0, video: settings.rec.video, quality: settings.rec.quality, startedAt: Date.now() };
 
     // kamera (opsional)
     if (rec.video !== 'none') {
@@ -263,11 +319,9 @@ export function createRecUi(app) {
     }
 
     rec.writer = new TakeWriter(null, sr, (i, blob) => db.putBlob(`rchunk:${id}:${i}`, blob));
-    await db.set('recording', { id, songId: song().id, sr, number, L, created: Date.now(), video: rec.video !== 'none', videoMime: rec.videoMime, quality: rec.quality });
+    await db.set('recording', { id, songId: song().id, sr, number, L, role: rec.role, created: Date.now(), video: rec.video !== 'none', videoMime: rec.videoMime, quality: rec.quality });
 
-    // bekukan take lama selama merekam (nggak ikut kedengeran)
-    player.setExtra(null);
-
+    // Overdub: take lain yang nyala tetap kedengeran di headphone (nggak ikut kerekam selama LOOPBACK mati).
     showOverlay(true);
     busySet('rec', `Lagi merekam "${song().title}"…`);
     keepAwake(true);
@@ -313,7 +367,7 @@ export function createRecUi(app) {
 
     const startAt = r.startPos + (cap?.startFrame ?? 0) / r.sr - r.L - r.startCtx;
     const take = await finalizeTake({
-      id: r.id, songId: song().id, number: r.number, sr: r.sr, channels: r.writer.channels || 1,
+      id: r.id, songId: song().id, number: r.number, sr: r.sr, channels: r.writer.channels || 1, role: r.role,
       frames: r.writer.frames, chunks, startAt, L: r.L,
       video: r.video !== 'none' && r.videoChunks > 0, videoChunks: r.videoChunks, videoMime: r.videoMime, quality: r.quality,
       videoStartAt: r.vStartCtx !== undefined ? r.startPos + (r.vStartCtx - r.startCtx) - (settings.videoLag || 0) / 1000 : startAt,
@@ -323,10 +377,11 @@ export function createRecUi(app) {
     $('ovStop').disabled = false;
     keepAwake(false);
     takes.push(take);
-    active = take;
-    await applyActive();
+    selected = take;
+    song().selectedTake = take.id;
+    await syncPlayer();
     renderTakes();
-    busyEnd('rec', true, `✅ ${take.name} tersimpan`, 'Aplikasi boleh ditutup. Dengerin hasilnya di mixer (track "Rekaman").');
+    busyEnd('rec', true, `✅ ${take.name} tersimpan`, 'Aplikasi boleh ditutup. Dengerin hasilnya di mixer.');
   }
 
   async function finalizeTake(o) {
@@ -354,6 +409,7 @@ export function createRecUi(app) {
       id: o.id, songId: o.songId, name: `Take ${o.number}${o.recovered ? ' (dipulihkan)' : ''}`, created: Date.now(),
       startAt: o.startAt, duration: frames / o.sr, sampleRate: o.sr, channels: o.channels, latency: o.L,
       offset: 0, fav: false, hasVideo, videoStartAt: o.videoStartAt, videoOffset: 0, videoMime: o.videoMime, quality: o.quality,
+      on: true, role: o.role || 'guitar', vol: 1, mute: false, solo: false, pan: 0,
     };
     await db.putTake(take);
     await db.set('recording', null);
@@ -371,7 +427,7 @@ export function createRecUi(app) {
     const startAt = r.startPos ?? 0;
     rkeys.sort((a, b) => Number(a.split(':')[2]) - Number(b.split(':')[2]));
     await finalizeTake({
-      id: r.id, songId: r.songId, number: r.number ?? '', sr: r.sr, channels: ch, chunks: rkeys.length, startAt, L: r.L,
+      id: r.id, songId: r.songId, number: r.number ?? '', sr: r.sr, channels: ch, chunks: rkeys.length, startAt, L: r.L, role: r.role,
       video: r.video && vkeys.length > 0, videoChunks: vkeys.length, videoMime: r.videoMime, quality: r.quality,
       videoStartAt: startAt, recovered: true,
     });
@@ -423,9 +479,16 @@ export function createRecUi(app) {
     $('takePlus').onclick = () => nudgeTake(10);
     $('videoMinus').onclick = () => nudgeVideo(-20);
     $('videoPlus').onclick = () => nudgeVideo(20);
+    $('recRoleSeg').onclick = (e) => {
+      const v = e.target.closest('button')?.dataset.v;
+      if (!v) return;
+      settings.rec.role = v; saveSettings(); renderSetup();
+      if (v === 'vocals' && settings.rec.setup === 'usb') toast('Vokal: pakai setup "Mic HP" + earphone (kecuali kamu punya mic USB).', 4500);
+    };
+    $('takesAll').onclick = useAllTakes;
     $('videoDefault').onclick = () => {
-      if (!active) return;
-      settings.videoLag = (settings.videoLag || 0) - (active.videoOffset || 0);
+      if (!selected) return;
+      settings.videoLag = (settings.videoLag || 0) - (selected.videoOffset || 0);
       saveSettings();
       toast('Disimpan: rekaman video berikutnya otomatis digeser segini.');
     };
@@ -439,14 +502,26 @@ export function createRecUi(app) {
   return {
     loadSong,
     recover,
-    unload: async () => { if (rec) await stopRecording(); await recorder.close(); takes = []; active = null; activeBuffer = null; },
-    get active() { return active; },
-    get activeBuffer() { return activeBuffer; },
+    unload: async () => { if (rec) await stopRecording(); await recorder.close(); takes = []; selected = null; buffers = new Map(); },
+    // take yang nyala + buffer-nya (untuk mixer & ekspor)
+    liveTakes: () => onTakes().filter((t) => buffers.has(t.id)).map((t) => ({ ...stripTake(t), buffer: buffers.get(t.id), startAt: effStart(t), rawStartAt: t.startAt })),
+    get hasTakes() { return takes.length > 0; },
+    updateTakeMix,
     effStart,
     effVideoStart,
     isRecording: () => !!rec,
   };
 }
+
+export const ROLE_LABEL = {
+  guitar: '🎸 Gitar',
+  bass: 'Bass',
+  vocals: '🎤 Vokal',
+  extra: 'Gitar tambahan',
+  piano: 'Keys',
+  drums: 'Drum',
+  other: 'Lainnya',
+};
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));

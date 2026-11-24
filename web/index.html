@@ -120,14 +120,23 @@
           <span class="row-label">Kualitas video</span>
           <div class="seg wide" id="recQualitySeg"><button data-v="1080">1080p</button><button data-v="720">720p (lebih ringan)</button></div>
         </div>
+        <div class="row">
+          <span class="row-label">Rekam sebagai</span>
+          <div class="seg wide" id="recRoleSeg">
+            <button data-v="guitar">🎸 Gitar</button><button data-v="extra">Gitar 2</button><button data-v="bass">Bass</button><button data-v="vocals">🎤 Vokal</button>
+          </div>
+        </div>
+        <p class="hint">Label ini nentuin track asli mana yang digantiin di cover. Bisa diganti nanti di daftar take (ada juga Keys, Drum, Lainnya).</p>
         <button id="recBtn" class="rec-btn"><span class="rec-dot"></span> Rekam dari posisi ini</button>
         <p class="hint" id="recStatus"></p>
-        <p class="hint">Backing ngikutin mixer (misal <b>Minus gitar</b>) + klik kalau nyala. Count-in ngikutin setelan metronome.</p>
+        <p class="hint">Backing ngikutin mixer (misal <b>Minus gitar</b>) + klik kalau nyala + <b>take lain yang nyala</b> (buat overdub). Count-in ngikutin setelan metronome.</p>
 
-        <div class="takes-head">Take</div>
+        <div class="takes-head">Take <button id="takesAll" class="ghost small" hidden>Pakai semua take gua</button></div>
+        <p class="hint">Centang = nyala di mixer (bisa beberapa sekaligus). Ketuk nama take buat geser posisinya.</p>
         <p class="hint" id="takeEmpty">Belum ada rekaman di lagu ini.</p>
         <div id="takeList" class="take-list"></div>
         <div id="takeAdjust" hidden>
+          <div class="sec-title">Atur: <span id="takeAdjustName"></span></div>
           <div class="row">
             <span class="row-label">Geser rekaman</span>
             <div class="stepper"><button id="takeMinus">−10ms</button><span id="takeOffset">0 ms</span><button id="takePlus">+10ms</button></div>
@@ -279,6 +288,7 @@
         <label><input type="radio" name="exKind" value="mix"><span><b>Sesuai mixer</b><small>Persis yang kedengeran sekarang, misal "minus gitar"</small></span></label>
         <label><input type="radio" name="exKind" value="lr"><span><b>Klik kiri + SQ kanan</b><small>Buat manggung: kiri ke in-ear drummer, kanan ke mixer</small></span></label>
       </div>
+      <p class="hint" id="exTakesInfo"></p>
       <div class="field" id="exStemsField">Track sequencer
         <div id="exStems" class="chips"></div>
       </div>
@@ -306,6 +316,11 @@
       <div class="field">Format
         <div class="seg wide" id="exFormat"><button type="button" data-v="wav">WAV</button><button type="button" data-v="mp3">MP3</button><button type="button" data-v="mp4">🎥 Video</button></div>
         <small id="exSize"></small>
+      </div>
+      <div class="field" id="exVideoField">Video yang ikut (maks 4, split screen)
+        <div id="exVideos" class="chips"></div>
+        <small id="exLayout"></small>
+        <label class="switch"><input type="checkbox" id="exLabels"><span></span> Tulis nama take di tiap kotak</label>
       </div>
       <p id="exStatus" class="status-line"></p>
       <div id="exDone" class="dlg-actions" hidden>
