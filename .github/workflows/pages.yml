@@ -13,14 +13,12 @@ permissions:
 
 concurrency:
   group: pages
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
-  deploy:
+  # Tahap 1: siapkan file aplikasi (ikon + cap nomor versi), lalu upload.
+  build:
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -33,5 +31,14 @@ jobs:
       - uses: actions/upload-pages-artifact@v3
         with:
           path: web
+
+  # Tahap 2: terbitkan ke GitHub Pages (job terpisah, sesuai pola resmi GitHub).
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
       - id: deploy
         uses: actions/deploy-pages@v4
