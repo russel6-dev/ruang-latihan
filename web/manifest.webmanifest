@@ -1,6 +1,6 @@
 {
-  "name": "Ruang Latihan",
-  "short_name": "Latihan",
+  "name": "Latihan Band",
+  "short_name": "LatihanBand",
   "description": "Pisah instrumen lagu + metronome otomatis buat latihan band.",
   "start_url": "./",
   "scope": "./",

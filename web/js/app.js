@@ -1163,7 +1163,7 @@ function showView(view, title) {
   $('libraryView').hidden = isPlayer;
   $('playerView').hidden = !isPlayer;
   $('backBtn').hidden = !isPlayer;
-  $('title').textContent = isPlayer ? title : 'Ruang Latihan';
+  $('title').textContent = isPlayer ? title : 'Latihan Band';
   if (isPlayer && history.state?.view !== 'player') history.pushState({ view: 'player' }, '');
   window.scrollTo(0, 0);
 }

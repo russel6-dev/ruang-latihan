@@ -1,4 +1,4 @@
-# Ruang Latihan
+# Latihan Band (repo: ruang-latihan)
 
 Aplikasi latihan band buat HP (PWA):
 
