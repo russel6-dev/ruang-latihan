@@ -38,6 +38,7 @@ self.addEventListener('fetch', (e) => {
   const req = e.request;
   const url = new URL(req.url);
   if (req.method !== 'GET' || url.origin !== location.origin) return;
+  if (url.pathname.includes('/models/')) return; // model AI disimpan sendiri oleh halaman uji (besar)
   const key = req.mode === 'navigate' ? new URL('index.html', self.registration.scope).href : req;
   e.respondWith((async () => {
     const cache = await caches.open(VERSION);

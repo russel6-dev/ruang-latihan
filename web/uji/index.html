@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Uji Kecepatan · Latihan Band</title>
+  <meta name="theme-color" content="#101217">
+  <style>
+    :root { --bg:#101217; --surface:#191c23; --s2:#222631; --line:#2c313d; --text:#eceef3; --muted:#8b92a3; --accent:#ffb020; --ok:#34d399; --bad:#f87171; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, sans-serif; }
+    main { max-width: 620px; margin: 0 auto; padding: 18px 16px 60px; }
+    h1 { font-size: 20px; margin: 4px 0 4px; }
+    .lead { color: var(--muted); margin: 0 0 16px; }
+    .card { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; margin-bottom: 12px; }
+    .card h2 { font-size: 16px; margin: 0 0 8px; }
+    .row { display: flex; justify-content: space-between; gap: 10px; padding: 4px 0; }
+    .row span:first-child { color: var(--muted); }
+    button { font: inherit; font-weight: 700; border: 0; border-radius: 12px; padding: 12px 16px; background: var(--accent); color: #1a1200; width: 100%; margin-top: 8px; }
+    button.ghost { background: var(--s2); color: var(--text); border: 1px solid var(--line); }
+    button:disabled { opacity: .45; }
+    .seg { display: flex; gap: 6px; margin-top: 6px; }
+    .seg button { margin: 0; padding: 9px; background: var(--s2); color: var(--text); border: 1px solid var(--line); }
+    .seg button.on { background: var(--accent); color: #1a1200; border-color: var(--accent); }
+    .bar { height: 8px; background: var(--s2); border-radius: 4px; overflow: hidden; margin-top: 8px; }
+    .bar div { height: 100%; width: 0; background: var(--accent); transition: width .3s; }
+    .status { color: var(--muted); font-size: 14px; margin-top: 6px; white-space: pre-line; }
+    .big { font-size: 26px; font-weight: 800; color: var(--accent); }
+    .ok { color: var(--ok); } .bad { color: var(--bad); }
+    .stems { display: grid; gap: 8px; margin-top: 8px; }
+    .stems label { font-weight: 700; font-size: 14px; }
+    audio { width: 100%; height: 36px; }
+    .warn { background: #3a2606; color: #ffd591; border: 1px solid #b26b00; border-radius: 12px; padding: 10px 12px; font-size: 14px; }
+    textarea { width: 100%; min-height: 120px; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 10px; padding: 10px; font: 12px/1.4 ui-monospace, monospace; }
+    input[type=file] { display: none; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>🧪 Uji Kecepatan: Pisah Instrumen di HP</h1>
+  <p class="lead">Ngetes seberapa cepat HP kamu misahin lagu jadi 6 instrumen <b>tanpa server</b>. Hasilnya buat nentuin apakah versi gratis bisa proses di HP.</p>
+
+  <div class="card">
+    <h2>1. Kemampuan HP</h2>
+    <div class="row"><span>GPU (WebGPU)</span><b id="gpu">ngecek…</b></div>
+    <div class="row"><span>Prosesor</span><b id="cores">-</b></div>
+    <div class="row"><span>Memori (perkiraan)</span><b id="mem">-</b></div>
+  </div>
+
+  <div class="card">
+    <h2>2. Model AI</h2>
+    <p class="status" id="modelInfo">Model dipakai sekali unduh, lalu disimpan di HP.</p>
+    <div class="bar"><div id="modelBar"></div></div>
+    <button id="loadModel">Unduh & siapkan model</button>
+  </div>
+
+  <div class="card">
+    <h2>3. Uji lagu</h2>
+    <div class="row"><span>Bagian yang diproses</span></div>
+    <div class="seg" id="durSeg">
+      <button data-v="30" class="on">30 detik pertama</button>
+      <button data-v="60">60 detik pertama</button>
+    </div>
+    <button id="pick" disabled>Pilih lagu & mulai uji</button>
+    <input type="file" id="file" accept="audio/*">
+    <div class="bar"><div id="runBar"></div></div>
+    <p class="status" id="runStatus"></p>
+    <div class="warn" id="dontClose" hidden>⚠️ Jangan tutup atau minimize halaman ini selama proses. HP mungkin agak anget, itu normal.</div>
+  </div>
+
+  <div class="card" id="resultCard" hidden>
+    <h2>4. Hasil</h2>
+    <div class="row"><span>Mesin yang dipakai</span><b id="rEngine"></b></div>
+    <div class="row"><span>Waktu proses</span><b id="rTime"></b></div>
+    <div class="row"><span>Rata-rata per potongan (7,8 dtk)</span><b id="rChunk"></b></div>
+    <div class="row"><span>Potongan pertama (termasuk persiapan)</span><b id="rFirst"></b></div>
+    <p style="margin:12px 0 2px">Perkiraan buat <b>lagu 4 menit</b>:</p>
+    <div class="big" id="rEst"></div>
+    <p class="status" id="rVerdict"></p>
+    <h2 style="margin-top:14px">Dengerin hasilnya</h2>
+    <div class="stems" id="stems"></div>
+    <h2 style="margin-top:14px">Kirim ke Claude</h2>
+    <p class="status">Salin teks ini, terus tempel di chat.</p>
+    <textarea id="report" readonly></textarea>
+    <button class="ghost" id="copy">Salin hasil</button>
+  </div>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.webgpu.min.js"></script>
+<script type="module" src="uji.js"></script>
+</body>
+</html>
