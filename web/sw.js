@@ -39,7 +39,13 @@ self.addEventListener('fetch', (e) => {
   const url = new URL(req.url);
   if (req.method !== 'GET' || url.origin !== location.origin) return;
   if (url.pathname.includes('/models/')) return; // model AI disimpan sendiri oleh halaman uji (besar)
-  const key = req.mode === 'navigate' ? new URL('index.html', self.registration.scope).href : req;
+  const scope = new URL(self.registration.scope);
+  const rel = url.pathname.slice(scope.pathname.length);
+  // Halaman lain di bawah aplikasi (mis. /uji/) jangan diganggu: langsung ke internet.
+  if (rel.includes('/') && !/^(js|icons|vendor)\//.test(rel)) return;
+  const isAppPage = rel === '' || rel === 'index.html';
+  if (req.mode === 'navigate' && !isAppPage) return;
+  const key = req.mode === 'navigate' ? new URL('index.html', scope).href : req;
   e.respondWith((async () => {
     const cache = await caches.open(VERSION);
     const cached = await cache.match(key, { ignoreSearch: true });
