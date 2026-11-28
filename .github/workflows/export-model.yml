@@ -1,0 +1,49 @@
+name: Ubah model AI ke ONNX (buat proses di HP)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache model AI
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/torch/hub/checkpoints
+          key: demucs-htdemucs_6s-v1
+
+      - name: Pasang library
+        run: |
+          pip install torch==2.3.1 torchaudio==2.3.1 --index-url https://download.pytorch.org/whl/cpu
+          pip install "numpy<2" cython
+          pip install --no-build-isolation diffq
+          pip install demucs==4.0.1 onnx==1.16.2 onnxruntime==1.19.2
+
+      - name: Ubah & verifikasi model
+        run: python engine/export_onnx.py web/models
+
+      - name: Simpan hasil ke repo
+        run: |
+          ls -la web/models engine/testdata
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add web/models engine/testdata
+          git commit -m "Model Demucs ONNX buat proses di HP" || echo "nggak ada perubahan"
+          git push
+
+      - name: Terbitkan ulang aplikasi
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run pages.yml --ref main
