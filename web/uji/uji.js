@@ -11,6 +11,8 @@ ort.env.wasm.numThreads = self.crossOriginIsolated ? Math.min(4, navigator.hardw
 
 let info = null, session = null, engine = '', gpuName = '-';
 let duration = 30;
+const forceCpu = new URLSearchParams(location.search).has('cpu');
+const tick = () => new Promise((r) => setTimeout(r, 30)); // kasih waktu layar buat update
 const fmtS = (s) => (s >= 60 ? `${Math.floor(s / 60)} mnt ${Math.round(s % 60)} dtk` : `${s.toFixed(1)} dtk`);
 
 // ---------------- 1. kemampuan HP
@@ -74,7 +76,7 @@ async function loadModel() {
     const externalData = files.slice(1).map((f) => ({ path: f, data: bufs[f] }));
     const tryCreate = (ep) => ort.InferenceSession.create(bufs['demucs.onnx'], { executionProviders: [ep], externalData, graphOptimizationLevel: 'all' });
     try {
-      if (!navigator.gpu) throw new Error('no webgpu');
+      if (!navigator.gpu || forceCpu) throw new Error('no webgpu');
       session = await tryCreate('webgpu');
       engine = 'GPU HP (WebGPU)';
     } catch (err) {
@@ -93,9 +95,13 @@ async function loadModel() {
 
 // ---------------- 3. proses
 async function decode(file) {
-  const ac = new AudioContext({ sampleRate: info.samplerate });
-  const buf = await ac.decodeAudioData(await file.arrayBuffer());
-  ac.close();
+  const data = await file.arrayBuffer();
+  // OfflineAudioContext: nggak butuh izin suara & nggak bisa "ketahan" (suspended) di Android
+  const ac = new OfflineAudioContext(2, 1, info.samplerate);
+  const buf = await Promise.race([
+    ac.decodeAudioData(data),
+    new Promise((_, no) => setTimeout(() => no(new Error('Lagu nggak kebaca dalam 60 detik. Coba file MP3 lain.')), 60000)),
+  ]);
   const n = Math.min(buf.length, Math.round(duration * info.samplerate));
   const l = buf.getChannelData(0).slice(0, n);
   const r = (buf.numberOfChannels > 1 ? buf.getChannelData(1) : buf.getChannelData(0)).slice(0, n);
@@ -118,9 +124,18 @@ async function run(file) {
   $('resultCard').hidden = true;
   $('dontClose').hidden = false;
   let wake = null;
-  try { wake = await navigator.wakeLock?.request('screen'); } catch { /* abaikan */ }
+  navigator.wakeLock?.request('screen').then((w) => { wake = w; }).catch(() => {});
+  const t00 = performance.now();
+  let stage = 'Membaca lagu…';
+  const show = () => { $('runStatus').textContent = `${stage} · ${fmtS((performance.now() - t00) / 1000)}`; };
+  const timer = setInterval(() => {
+    show();
+    // Potongan pertama di GPU kelamaan -> tawarkan CPU
+    if (engine.startsWith('GPU') && firstPending && performance.now() - tFirst > 150000) $('useCpu').hidden = false;
+  }, 1000);
+  let firstPending = false, tFirst = 0;
   try {
-    $('runStatus').textContent = 'Membaca lagu…';
+    show(); await tick();
     const chs = await decode(file);
     const N = chs[0].length;
     const { mean, std } = stats(chs);
@@ -138,8 +153,12 @@ async function run(file) {
 
     const out = Array.from({ length: S }, () => [new Float32Array(N), new Float32Array(N)]);
     const sumW = new Float32Array(N);
+    const songSec = N / info.samplerate;
     const t0 = performance.now();
     let first = 0, modelMs = 0;
+    firstPending = true; tFirst = t0;
+    stage = `✅ Lagu terbaca (${Math.round(songSec)} dtk)\nPotongan 1/${offsets.length}: ${engine.startsWith('GPU') ? 'GPU lagi nyiapin diri (sekali aja, bisa 1–3 menit)…' : 'memproses…'}`;
+    show(); await tick();
     for (let k = 0; k < offsets.length; k++) {
       const off = offsets[k];
       const cl = Math.min(L, N - off), delta = L - cl, start = off - Math.floor(delta / 2);
@@ -162,11 +181,10 @@ async function run(file) {
         }
       }
       for (let i = 0; i < cl; i++) sumW[off + i] += weight[i];
-      if (k === 0) first = performance.now() - t0;
-      const el = (performance.now() - t0) / 1000;
+      if (k === 0) { first = performance.now() - t0; firstPending = false; $('useCpu').hidden = true; }
       $('runBar').style.width = `${((k + 1) / offsets.length) * 100}%`;
-      $('runStatus').textContent = `Memproses potongan ${k + 1}/${offsets.length} · ${fmtS(el)}`;
-      await new Promise((r) => setTimeout(r, 0));
+      stage = k + 1 < offsets.length ? `Memproses potongan ${k + 2}/${offsets.length}` : 'Merapikan hasil…';
+      show(); await tick();
     }
     const total = (performance.now() - t0) / 1000;
     for (let s = 0; s < S; s++) for (let c = 0; c < 2; c++) {
@@ -176,8 +194,10 @@ async function run(file) {
     showResult({ total, first: first / 1000, chunks: offsets.length, modelMs, N, out });
   } catch (err) {
     console.error(err);
-    $('runStatus').innerHTML = `<span class="bad">❌ Gagal: ${err.message}</span>`;
+    $('runStatus').innerHTML = `<span class="bad">❌ Gagal (${stage.split('\n').pop()}): ${err.message}</span>`;
+    if (engine.startsWith('GPU')) $('useCpu').hidden = false;
   } finally {
+    clearInterval(timer);
     $('dontClose').hidden = true;
     $('pick').disabled = false;
     try { await wake?.release(); } catch { /* abaikan */ }
@@ -241,6 +261,7 @@ $('durSeg').onclick = (e) => {
   for (const b of $('durSeg').children) b.classList.toggle('on', Number(b.dataset.v) === v);
 };
 $('pick').onclick = () => $('file').click();
+$('useCpu').onclick = () => { location.href = `${location.pathname}?cpu`; };
 $('file').onchange = (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) run(f); };
 $('copy').onclick = async () => {
   try { await navigator.clipboard.writeText($('report').value); $('copy').textContent = 'Tersalin ✅'; }
