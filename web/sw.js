@@ -6,7 +6,7 @@ const SHELL = [
   './', 'index.html', 'style.css', 'manifest.webmanifest',
   'js/app.js', 'js/api.js', 'js/db.js', 'js/player.js', 'js/grid.js', 'js/export.js', 'js/mp3worker.js', 'js/recorder.js', 'js/rec-ui.js', 'js/capture-worklet.js',
   'vendor/lame.min.js',
-  'icons/icon-192.png', 'icons/icon-512.png', 'icons/maskable-512.png',
+  'icons/icon-192.png', 'icons/icon-512.png', 'icons/maskable-512.png', 'icons/apple-touch-icon.png',
 ];
 
 self.addEventListener('install', (e) => {

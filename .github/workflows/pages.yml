@@ -16,15 +16,11 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # Tahap 1: siapkan file aplikasi (ikon + cap nomor versi), lalu upload.
+  # Tahap 1: cap nomor versi, lalu upload file aplikasi.
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      - run: pip install pillow && python tools/make_icons.py
       - name: Cap versi (dipakai notifikasi update di aplikasi)
         run: sed -i "s/^const VERSION = '[^']*';/const VERSION = 'rl-${GITHUB_SHA::7}';/" web/sw.js && grep "^const VERSION" web/sw.js
       - uses: actions/configure-pages@v5

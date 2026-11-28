@@ -39,7 +39,8 @@ HP
 | `engine/` | Dijalankan GitHub Actions: pemisah instrumen + deteksi ketukan |
 | `.github/workflows/process.yml` | Workflow pemroses lagu |
 | `.github/workflows/pages.yml` | Menerbitkan `web/` ke GitHub Pages |
-| `tools/make_icons.py` | Bikin ikon aplikasi |
+| `web/icons/icon.svg` | Sumber ikon aplikasi (PNG di folder yang sama) |
+| `store/` | Aset buat Play Store (ikon 512×512) |
 | `web/vendor/lame.min.js` | Encoder MP3 [lamejs](https://github.com/zhuker/lamejs) (LGPL-3.0, lihat `LICENSE-lamejs.txt`) |
 
 ## Setup sekali
