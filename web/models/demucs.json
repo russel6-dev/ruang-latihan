@@ -1,0 +1,29 @@
+{
+ "model": "htdemucs_6s",
+ "sources": [
+  "drums",
+  "bass",
+  "other",
+  "vocals",
+  "guitar",
+  "piano"
+ ],
+ "samplerate": 44100,
+ "segment": 7.8,
+ "length": 343980,
+ "frames": 336,
+ "bins": 2048,
+ "nfft": 4096,
+ "hop": 1024,
+ "files": [
+  "demucs.data0",
+  "demucs.data1",
+  "demucs.onnx"
+ ],
+ "sizes": {
+  "demucs.data1": 53164032,
+  "demucs.data0": 56438784,
+  "demucs.onnx": 4979048
+ },
+ "max_err": 2.3871660232543945e-05
+}
